@@ -1,0 +1,14 @@
+[
+  {
+    "domain": "www.reuters.com",
+    "hostOnly": true,
+    "httpOnly": false,
+    "name": "reuters-geo",
+    "path": "/",
+    "sameSite": "unspecified",
+    "secure": true,
+    "session": true,
+    "storeId": "0",
+    "value": "{\"country\":\"-\", \"region\":\"-\"}"
+  }
+]
