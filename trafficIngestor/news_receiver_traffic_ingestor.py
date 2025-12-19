@@ -3,11 +3,11 @@
 """
 run_news_receiver_pool.py
 
-- 从 /home/pcz/news_receiver/db/missing_pcap.csv 读取记录（id,url,domain）
+- 从 csv 读取记录（id,url,domain）
 - 每行转 JSON：{"row_id": id, "url": url, "domain": domain}
 - 使用容器池 news_receiver0..78 并发执行：
     docker exec <name> python -u /app/action.py '<JSON>'
-- 创建容器时：--init 防僵尸进程，并挂载 /home/pcz/news_receiver/traffice_capture:/app
+- 创建容器时：--init 防僵尸进程，并挂载 CODE_BASE_PATH + /traffice_capture:/app
 - 每个容器启动后执行一次：关闭包合并（tso/gso/gro off）
 
 长时间执行：
@@ -32,7 +32,7 @@ import shutil
 import threading
 
 # ============== 配置 ==============
-CODE_BASE_PATH = '/home/pcz/news_receiver'
+CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH =  "test.csv"
 CONTAINER_PREFIX = "traffic_ingestor"
 START_IDX = 0
@@ -266,7 +266,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
         try:
             with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
                 result = json.load(f)
-
+            print('result', result)
             pcap_path = result.get("pcap_path")
             ssl_key_file_path = result.get("ssl_key_file_path")
             content_path = result.get("content_path")
@@ -281,7 +281,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             content_path = content_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
             html_path = html_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
             screenshot_path = screenshot_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-
+            print('screenshot_path', screenshot_path)
             dst = os.path.join(DASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
             if not os.path.exists(pcap_dst):
@@ -436,7 +436,7 @@ def main():
 
     # 等待并清理容器
     time.sleep(60)
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
+    # subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
 
 
 if __name__ == "__main__":
