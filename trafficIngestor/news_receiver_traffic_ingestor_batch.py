@@ -402,5 +402,8 @@ def main():
 if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    for i in range(100):
+    count = 120
+    print(f"开始执行数据采集任务,共计{count}次")
+    for i in range(120):
+        print(f'当前开始执行第{i + 1}次')
         main()
