@@ -134,7 +134,7 @@ def start_task():
     ssl_key_file_size = os.path.getsize(ssl_key_file_path)
     logger.info(f"pcap文件大小：{pcap_file_size}，ssl_key文件大小：{ssl_key_file_size}")
     need_restart = False
-    if pcap_file_size > wiwi_pcap_lowest_size and ssl_key_file_size > wiwi_ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
+    if os.path.exists(pcap_path) and os.path.exists(ssl_key_file_path) and (pcap_file_size > wiwi_pcap_lowest_size or ssl_key_file_size > wiwi_ssl_key_lowest_size):
         logger.info("数据文件校验通过")
     else:
         need_restart = True

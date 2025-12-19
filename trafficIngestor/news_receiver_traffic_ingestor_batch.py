@@ -27,10 +27,10 @@ import threading
 
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
-CSV_PATH = "test.csv"
+CSV_PATH = "collected_request_urls_all.csv"
 CONTAINER_PREFIX = "batch_traffic_ingestor"
 START_IDX = 0
-END_IDX = 2                      # 0..2 共 3 个容器
+END_IDX = 19 * 5                      # 0..2 共 3 个容器
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 CONTAINER_CODE_PATH = "/app"
 HOST_CODE_PATH = CODE_BASE_PATH + "/batch_traffice_capture"
@@ -400,5 +400,7 @@ def main():
     # subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
 
 if __name__ == "__main__":
+    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    main()
+    for i in range(100):
+        main()

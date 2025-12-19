@@ -33,10 +33,10 @@ import threading
 
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
-CSV_PATH =  "test.csv"
+CSV_PATH =  "collected_request_urls_all.csv"
 CONTAINER_PREFIX = "single_traffic_ingestor"
 START_IDX = 0
-END_IDX = 2                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 19 * 5                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -321,8 +321,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
 
 def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, retry: int):
     """
-    单次尝试版本：每个任务只执行一次，不做重试。
-    保留 retry 参数以兼容原调用处，但函数内部不使用。
+    带重试的 worker：每个任务最多尝试 retry+1 次（首次 + retry 次重试）
     """
     while True:
         try:
@@ -332,32 +331,47 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
         row_id = task.get("row_id", "")
         url    = task.get("url", "")
         task["container"] = container
-        try:
-            log(f"{container} -> start [{row_id}] {url}")
-            ok, err = exec_once(task)
-            if ok:
-                log(f"{container} -> done  [{row_id}] {url}")
-                with _stats_lock:
-                    stats["ok"] += 1
-            else:
-                log(f"{container} -> fail  [{row_id}] {err[:200]}")
-                with _stats_lock:
-                    stats["fail"] += 1
-                    stats["errors"].append((task, err))
-        except subprocess.TimeoutExpired:
-            err = f"timeout>{DOCKER_EXEC_TIMEOUT}s"
-            log(f"{container} -> timeout [{row_id}] {url}")
+
+        ok = False
+        err = ""
+        for attempt in range(retry + 1):  # 首次 + retry 次重试
+            try:
+                if attempt == 0:
+                    log(f"{container} -> start [{row_id}] {url}")
+                else:
+                    log(f"{container} -> retry {attempt}/{retry} [{row_id}] {url}")
+
+                ok, err = exec_once(task)
+                if ok:
+                    log(f"{container} -> done  [{row_id}] {url}")
+                    with _stats_lock:
+                        stats["ok"] += 1
+                    break  # 成功，跳出重试循环
+                else:
+                    log(f"{container} -> fail  [{row_id}] {err[:200]}")
+                    if attempt < retry:
+                        time.sleep(5)  # 重试前等待 5 秒
+
+            except subprocess.TimeoutExpired:
+                err = f"timeout>{DOCKER_EXEC_TIMEOUT}s"
+                log(f"{container} -> timeout [{row_id}] {url}")
+                if attempt < retry:
+                    time.sleep(5)
+
+            except Exception as e:
+                err = repr(e)
+                log(f"{container} -> error [{row_id}] {err}")
+                if attempt < retry:
+                    time.sleep(5)
+
+        # 所有重试都失败
+        if not ok:
+            log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
             with _stats_lock:
                 stats["fail"] += 1
                 stats["errors"].append((task, err))
-        except Exception as e:
-            err = repr(e)
-            log(f"{container} -> error [{row_id}] {err}")
-            with _stats_lock:
-                stats["fail"] += 1
-                stats["errors"].append((task, err))
-        finally:
-            q.task_done()
+
+        q.task_done()
 
 def prepare_pool_once() -> List[str]:
     ensure_docker_available()
@@ -436,9 +450,11 @@ def main():
 
     # 等待并清理容器
     time.sleep(60)
-    # subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
+    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
 
 
 if __name__ == "__main__":
+    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    main()
+    for i in range(100):
+        main()
