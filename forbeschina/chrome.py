@@ -1,4 +1,6 @@
 import json
+import subprocess
+
 from selenium.webdriver.chrome.service import Service
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -90,7 +92,7 @@ def create_chrome_driver():
     os.environ["SE_OFFLINE"] = "true"
     _ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9"
     _LANG_PRIMARY = "zh-CN"
-    chrome_options.binary_location = "/usr/bin/google-chrome"  # 固定 Chrome 路径，避免联网查询
+    # chrome_options.binary_location = "/usr/bin/google-chrome"  # 固定 Chrome 路径，避免联网查询
     chrome_options.add_argument('--headless')  # 无界面模式
     chrome_options.add_argument("--disable-gpu")  # 禁用 GPU 加速
     chrome_options.add_argument("--no-sandbox")  # 禁用沙盒
@@ -143,8 +145,8 @@ def create_chrome_driver():
                             '''.strip()})
     return browser
 
-def add_cookies(browser):
-    with open("youtube_cookie.txt", "r", encoding="utf-8") as f:
+def add_cookies(browser, cookie_file):
+    with open(cookie_file, "r", encoding="utf-8") as f:
         raw_cookies = json.load(f)
 
     for ck in raw_cookies:
@@ -152,6 +154,15 @@ def add_cookies(browser):
             browser.add_cookie(sanitize(ck))
         except Exception as e:
             print("跳过无效 cookie:", ck["name"], e)
+
+# 清除浏览器进程
+def kill_chrome_processes():
+    try:
+        # Run the command to kill all processes containing 'chrome'
+        subprocess.run(['pkill', '-f', 'chromedriver'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(['pkill', '-f', 'google-chrome'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        print(f"Error occurred: {e.stderr.decode('utf-8')}")
 
 def sanitize(raw: dict) -> dict:
     """把 DevTools 导出的 cookie → Selenium 可接受格式"""

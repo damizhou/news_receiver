@@ -56,7 +56,7 @@ def make_session(timeout: int = 20) -> requests.Session:
 def fetch_archive_html(session: requests.Session, day: dt.date) -> str:
     """优先 day_YYYYMMDD.html；失败回退 index.html?d=YYYY-MM-DD。均返回 2xx 才算成功。"""
     candidates = [
-        DAY_URL_TMPL.format(date_compact=day.strftime("%Y%m%d")),
+        # DAY_URL_TMPL.format(date_compact=day.strftime("%Y%m%d")),
         INDEX_URL_TMPL.format(date=day.isoformat()),
     ]
     last_err = None
@@ -97,12 +97,16 @@ def save_ndjson(path: str, items: List[Article]) -> None:
         for a in items:
             f.write(json.dumps(dataclasses.asdict(a), ensure_ascii=False) + "\n")
 
+def append_ndjson(path: str, item: Article) -> None:
+    """追加单条记录到 ndjson 文件"""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(dataclasses.asdict(item), ensure_ascii=False) + "\n")
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Fetch latest Daily Mail via daily archive, output NDJSON.")
-    ap.add_argument("--limit", type=int, default=10000)
-    ap.add_argument("--out", "-o", default="dailymail_latest_1000.ndjson")
+    ap = argparse.ArgumentParser(description="Fetch latest Daily Mail via daily archive, output NDJSON (无限抓取).")
+    ap.add_argument("--out", "-o", default="dailymail_all1.ndjson")
     ap.add_argument("--from-date", default=None)      # YYYY-MM-DD
-    ap.add_argument("--max-days", type=int, default=14)
+    ap.add_argument("--max-days", type=int, default=36500)  # 默认约100年，实际无限
     ap.add_argument("--sleep", type=float, default=0.6)
     ap.add_argument("--timeout", type=int, default=20)
     args = ap.parse_args()
@@ -110,7 +114,12 @@ def main() -> None:
     start = dt.date.fromisoformat(args.from_date) if args.from_date else dt.date.today()
     session = make_session(timeout=args.timeout)
 
-    total: List[Article] = []; seen: Set[str] = set()
+    # 清空输出文件
+    with open(args.out, "w", encoding="utf-8") as f:
+        pass
+
+    total_written = 0
+    seen: Set[str] = set()
     for day in daterange_backwards(start, args.max_days):
         try:
             html = fetch_archive_html(session, day)
@@ -121,14 +130,14 @@ def main() -> None:
         for a in arts:
             k = a.key()
             if k in seen: continue
-            seen.add(k); total.append(a); added += 1
-            if len(total) >= args.limit: break
-        print(f"[INFO] {day} 抽取 {len(arts)} 条，新增 {added} 条，累计 {len(total)} 条")
+            seen.add(k)
+            append_ndjson(args.out, a)
+            total_written += 1
+            added += 1
+        print(f"[INFO] {day} 抽取 {len(arts)} 条，新增 {added} 条，累计 {total_written} 条")
         time.sleep(args.sleep)
-        if len(total) >= args.limit: break
 
-    save_ndjson(args.out, total[:args.limit])
-    print(f"[OK] 输出 {len(total[:args.limit])} 条 → {args.out}")
+    print(f"[OK] 输出 {total_written} 条 → {args.out}")
 
 if __name__ == "__main__":
     main()

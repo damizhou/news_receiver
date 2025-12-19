@@ -8,8 +8,7 @@ import threading
 from datetime import datetime
 from capture import capture, stop_capture
 from logger import logger
-# from chrome import create_chrome_driver, open_url_and_save_content
-from firefox import create_firefox_driver, open_url_and_save_content
+from chrome import create_chrome_driver, open_url_and_save_content
 current_index = 0
 allowed_domain = ""
 wiwi_pcap_lowest_size = 250000
@@ -58,7 +57,6 @@ def kill_tcpdump_processes():
         print(f"Error occurred: {e.stderr.decode('utf-8')}")
 
 
-
 def start_task():
     global current_index
     current_index += 1
@@ -94,7 +92,7 @@ def start_task():
                     logger.error(f"删除旧文件失败: {e}")
 
     formatted_time = datetime.now().strftime("%Y%m%d_%H_%M_%S")
-    # kill_chrome_processes()
+    kill_chrome_processes()
     kill_tcpdump_processes()
     time.sleep(1)
 
@@ -103,7 +101,7 @@ def start_task():
     traffic_thread.start()
     time.sleep(1)
     logger.info(f"创建浏览器")
-    browser, ssl_key_file_path = create_firefox_driver(allowed_domain, formatted_time, f"{row_id}")
+    browser, ssl_key_file_path = create_chrome_driver(allowed_domain, formatted_time, f"{row_id}")
     logger.info(f"开始访问第{row_id}的词条：{url}")
     content_path, html_path = open_url_and_save_content(browser, url, ssl_key_file_path)
 
@@ -111,11 +109,11 @@ def start_task():
         browser.quit()  # 彻底退出，会回收 chromedriver 与子进程
     except Exception as e:
         logger.warning(f"browser.quit() 异常: {e}")
-    # logger.info("清理浏览器进程(兜底)")
-    # kill_chrome_processes()
+    logger.info("清理浏览器进程(兜底)")
+    kill_chrome_processes()
 
-    # logger.info(f"等待TCP结束挥手完成，耗时60秒")
-    # time.sleep(60)
+    logger.info(f"等待TCP结束挥手完成，耗时60秒")
+    time.sleep(60)
 
     # 关流量收集
     logger.info(f"关流量收集")

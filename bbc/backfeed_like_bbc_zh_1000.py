@@ -59,20 +59,20 @@ CDX = "https://web.archive.org/cdx/search/cdx"
 # 默认同时查 simp + trad 的 RSS 快照，更稳
 FEED_URLS_DEFAULT = [
     "https://feeds.bbci.co.uk/zhongwen/simp/index.xml",               # 主页
-#     "https://www.bbc.co.uk/zhongwen/simp/world/index.xml",         # 国际新闻
-#     "https://www.bbc.co.uk/zhongwen/simp/china/index.xml",         # 两岸三地 / 中国
-#     "https://www.bbc.co.uk/zhongwen/simp/uk/index.xml",            # 英国动态
-#     "https://www.bbc.co.uk/zhongwen/simp/business/index.xml",      # 金融财经
-#     "https://www.bbc.co.uk/zhongwen/simp/interactive/index.xml",   # 网上互动
-#     "https://www.bbc.co.uk/zhongwen/simp/multimedia/index.xml",    # 音视图片
-#     "https://www.bbc.co.uk/zhongwen/simp/indepth/index.xml",       # 分析评论
-#     "https://www.bbc.co.uk/zhongwen/simp/chinese_analysis/index.xml",   # 中国评论
-#     "https://www.bbc.co.uk/zhongwen/simp/world_commentary/index.xml",   # 国际分析
-#     "https://www.bbc.co.uk/zhongwen/simp/focus_on_china/index.xml",     # 点评中国
-#     "https://www.bbc.co.uk/zhongwen/simp/comments_on_china/index.xml",  # 大家谈中国
-#     "https://www.bbc.co.uk/zhongwen/simp/hong_kong_review/index.xml",   # 香港观察
-#     "https://www.bbc.co.uk/zhongwen/simp/taiwan_letters/index.xml",     # 台湾来鸿
-#     "https://www.bbc.co.uk/zhongwen/simp/fooc/index.xml",               # 记者来鸿
+    "https://www.bbc.co.uk/zhongwen/simp/world/index.xml",         # 国际新闻
+    "https://www.bbc.co.uk/zhongwen/simp/china/index.xml",         # 两岸三地 / 中国
+    "https://www.bbc.co.uk/zhongwen/simp/uk/index.xml",            # 英国动态
+    "https://www.bbc.co.uk/zhongwen/simp/business/index.xml",      # 金融财经
+    "https://www.bbc.co.uk/zhongwen/simp/interactive/index.xml",   # 网上互动
+    "https://www.bbc.co.uk/zhongwen/simp/multimedia/index.xml",    # 音视图片
+    "https://www.bbc.co.uk/zhongwen/simp/indepth/index.xml",       # 分析评论
+    "https://www.bbc.co.uk/zhongwen/simp/chinese_analysis/index.xml",   # 中国评论
+    "https://www.bbc.co.uk/zhongwen/simp/world_commentary/index.xml",   # 国际分析
+    "https://www.bbc.co.uk/zhongwen/simp/focus_on_china/index.xml",     # 点评中国
+    "https://www.bbc.co.uk/zhongwen/simp/comments_on_china/index.xml",  # 大家谈中国
+    "https://www.bbc.co.uk/zhongwen/simp/hong_kong_review/index.xml",   # 香港观察
+    "https://www.bbc.co.uk/zhongwen/simp/taiwan_letters/index.xml",     # 台湾来鸿
+    "https://www.bbc.co.uk/zhongwen/simp/fooc/index.xml",               # 记者来鸿
 ]
 
 def cdx_list_snapshots(session: requests.Session, feed_url: str, limit: int | None = None) -> List[str]:

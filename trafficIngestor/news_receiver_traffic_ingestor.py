@@ -35,9 +35,9 @@ import threading
 CSV_PATH = "/home/pcz/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_receiver"
 START_IDX = 0
-END_IDX = 19 * 3 - 1                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
-# DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"chuanzhoupan/trace_spider_firefox:251104
-DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
+END_IDX = 0                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
+# DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
 HOST_CODE_PATH = "/home/pcz/news_receiver/traffice_capture"  # ★ 按你要求固定
 DASE_DST = '/netdisk/news_receiver'
@@ -51,6 +51,27 @@ EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自�
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
+
+def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
+    """
+    只删除 HOST_CODE_PATH 下的所有子文件夹，但保留 HOST_CODE_PATH 下的文件。
+
+    示例：
+        clear_host_code_subdirs()  # 默认清理 HOST_CODE_PATH
+    """
+    base_path = Path(base)
+    if not base_path.exists() or not base_path.is_dir():
+        log(f"WARN: HOST_CODE_PATH 不存在或不是目录：{base_path}")
+        return
+
+    for entry in base_path.iterdir():
+        # 只处理子目录，不处理文件
+        if entry.is_dir():
+            try:
+                shutil.rmtree(entry)
+                log(f"删除子目录: {entry}")
+            except Exception as e:
+                log(f"WARN: 删除子目录失败: {entry} -> {e}")
 
 def _wait_before_exec():
     """
@@ -404,4 +425,5 @@ def main():
 
 
 if __name__ == "__main__":
+    clear_host_code_subdirs()
     main()

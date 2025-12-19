@@ -149,8 +149,8 @@ def update_batch(engine, table_name, rows: List[Record]) -> int:
         conn.close()
 
 if __name__ == "__main__":
-    # domains = ["bbc.com", "dailymail.co.uk", "forbeschina.com", "nih.gov"]
-    domains = ["dailymail.co.uk"]
+    domains = ["bbc.com"]
+    # domains = ["bbc.com", "dailymail.co.uk"]
     engine, msg = connect_db()
     print(msg)
     for domain in domains:

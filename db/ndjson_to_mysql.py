@@ -90,7 +90,7 @@ def insert_bbc_ndjson(engine):
         :return: 实际插入的行数
         """
     items = []
-    with open("../bbc/bbc_zh_test.ndjson", "r", encoding="utf-8") as f:
+    with open("../bbc/bbc_zh_full.ndjson", "r", encoding="utf-8") as f:
         lines = f.readlines()
         for line in lines:
             try:
@@ -127,6 +127,7 @@ def insert_bbc_ndjson(engine):
             to_insert = [row for row in batch if row["url"] not in exist]
             if to_insert:
                 conn.execute(ins, to_insert)  # executemany
+                print(f'插入了{to_insert}条数据')
                 inserted += len(to_insert)
     return inserted
 
@@ -193,7 +194,7 @@ def insert_forbes_ndjson(engine):
         :return: 实际插入的行数
         """
     items = []
-    with open("../forbeschina/forbeschina_leadership.ndjson", "r", encoding="utf-8") as f:
+    with open("../forbeschina/forbeschina.ndjson", "r", encoding="utf-8") as f:
         lines = f.readlines()
         for line in lines:
             try:
@@ -277,6 +278,7 @@ def insert_dailymail_ndjson(engine):
             to_insert = [row for row in batch if row["url"] not in exist]
             if to_insert:
                 conn.execute(ins, to_insert)  # executemany
+                print(f'插入了{to_insert}条数据')
                 inserted += len(to_insert)
     return inserted
 
@@ -333,74 +335,77 @@ def insert_reuters_ndjson(engine):
 def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> int:
     """
     从给定表中导出 pcap_path 为空的记录到 CSV。
-    """
-    # 表名安全校验（字母、数字、下划线）
-    import re
-    if not re.fullmatch(r"[A-Za-z0-9_]+", table or ""):
-        raise ValueError(f"非法表名：{table!r}")
 
-    if not out_csv:
-        out_csv = f"{table}_missing_pcap.csv"
-
-    sql = f"""
-        SELECT id, url
-        FROM {table}
-        WHERE (pcap_path IS NULL OR pcap_path = '')
-          AND url IS NOT NULL AND url <> ''
-        ORDER BY id LIMIT 9000
+    逻辑：
+      1) 统计已有 pcap_path 的记录数 a（且 url 不为空）
+      2) 计算 b = 10000 - a
+      3) 只导出 b 条缺失 pcap 的记录到 CSV（b <= 0 时不导出）
     """
 
-    # if table == "wikicontent":
-    #     sql = f"""
-    #             SELECT id, url
-    #             FROM {table}
-    #             ORDER BY id LIMIT 100
-    #         """
-    # else:
-    #     sql = f"""
-    #        #     SELECT id, title
-    #        #     FROM {table}
-    #        #     ORDER BY id LIMIT 100
-    #        # """
+    total = 10000
 
-
-
-    # sql = f"""
-    #     SELECT id, title
-    #     FROM {table}
-    #     ORDER BY id LIMIT 100
-    # """
-
-    exported = 0
     p = Path(out_csv)
     need_header = (not p.exists()) or (p.stat().st_size in (0, 3))
-    with engine.connect() as conn, open(out_csv, "a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["id", "url", "domain"])
-        if need_header:
-            writer.writeheader()
 
-        result = conn.execute(_sql_text(sql))
-        if table == "bbc_content":
-            domain = 'bbc.com'
-        elif table == "nih_content":
-            domain = 'nih.gov'
-        elif table == "forbeschina_content":
-            domain = 'forbeschina.com'
-        elif table == "dailymail_content":
-            domain = 'dailymail.co.uk'
-        elif table == "wikicontent":
-            domain = 'zh.wikipedia.org'
-        elif table == "theguardian_content":
-            domain = 'theguardian.com'
-        for row in result:
-            _id = row[0]
-            if table == "wikicontent":
-                _url = "https://zh.wikipedia.org/wiki/" + row[1]
-            else:
-                _url = row[1]
-            domain = domain
-            writer.writerow({"id": _id, "url": _url, "domain": domain})
-            exported += 1
+    exported = 0
+
+    with engine.connect() as conn:
+        # 1) 统计已有 pcap_path 的记录数 a
+        # count_sql = f"""
+        #     SELECT COUNT(*)
+        #     FROM {table}
+        #     WHERE pcap_path IS NOT NULL AND pcap_path <> ''
+        #       AND url IS NOT NULL AND url <> ''
+        # """
+        # current_count = conn.execute(_sql_text(count_sql)).scalar() or 0
+        # current_count = int(current_count)
+        #
+        # # 2) 计算需要导出的缺失数量 b
+        # missing_count = total - current_count
+        # if missing_count <= 0:
+        #     print(
+        #         f"[skip] {table}: 已有 {current_count} 条 pcap 记录，已达到或超过 {total} 条，总量，不再导出缺失任务。"
+        #     )
+        #     return 0
+
+        # 3) 只取 b 条 pcap_path 为空的记录
+        sql = f"""
+            SELECT id, url
+            FROM {table}
+            WHERE (pcap_path IS NULL OR pcap_path = '')
+              AND url IS NOT NULL AND url <> ''
+            ORDER BY id
+        """
+
+        with open(out_csv, "a", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["id", "url", "domain"])
+            if need_header:
+                writer.writeheader()
+
+            # 统一确定域名（未知表就留空字符串）
+            domain = ""
+            if table == "bbc_content":
+                domain = "bbc.com"
+            elif table == "nih_content":
+                domain = "nih.gov"
+            elif table == "forbeschina_content":
+                domain = "forbeschina.com"
+            elif table == "dailymail_content":
+                domain = "dailymail.co.uk"
+            elif table == "wikicontent":
+                domain = "zh.wikipedia.org"
+            elif table == "theguardian_content":
+                domain = "theguardian.com"
+
+            result = conn.execute(_sql_text(sql))
+            for row in result:
+                _id = row[0]
+                if table == "wikicontent":
+                    _url = "https://zh.wikipedia.org/wiki/" + row[1]
+                else:
+                    _url = row[1]
+                writer.writerow({"id": _id, "url": _url, "domain": domain})
+                exported += 1
 
     print(f"[write] {exported} rows -> {out_csv}")
     return exported
@@ -408,14 +413,16 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
 def main():
     engine, msg = connect_db()
     for i in range(1):
+        # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
         tables = ["bbc_content"]
-        # tables = ["bbc_content", "nih_content", "forbeschina_content", "dailymail_content", "theguardian_content", "wikicontent"]
-        # tables = ["bbc_content", "nih_content", "forbeschina_content", "dailymail_content"]
+        # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
         # tables = ["wikicontent"]
         for table in tables:
             export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
     # insert_dailymail_ndjson(engine)
-    # insert_bbc_ndjson(engine)
-
+    # insert_count = insert_bbc_ndjson(engine)
+    # insert_count = insert_forbes_ndjson(engine)
+    # insert_count = insert_nih_ndjson(engine)
+    # print(f"Inserted {insert_count} rows into table")
 if __name__ == "__main__":
     main()

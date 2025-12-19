@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 NIH News Releases 全量抓取（无命令行参数版）
-- 遍历 https://www.nih.gov/news-events/news-releases?page={n}
+- 遍历 https://www.nih.gov/news-events/nih-research-matters?page={n}
 - 仅抓列表页字段：title / date_str / date_iso / summary / url / page_index
 - 不抓详情正文
 - 输出 NDJSON：nih.ndjson（断点续跑基于 URL 去重）
@@ -40,7 +40,7 @@ DRY_RUN: bool = False             # 演练模式：不写文件，仅打印
 # 常量
 # =========================
 BASE = "https://www.nih.gov"
-LIST_URL = f"{BASE}/news-events/news-releases"
+LIST_URL = f"{BASE}/news-events/nih-research-matters"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
 DATE_PAT = re.compile(r"([A-Za-z]+ \d{1,2}, \d{4})")
@@ -140,8 +140,8 @@ def parse_list_items(html: str, page_index: int) -> List[NewsItem]:
         if not href.startswith("http"):
             href = urljoin(BASE, href)
         parsed = urlparse(href)
-        # 仅保留 /news-events/news-releases/xxx 详情页链接
-        if not parsed.path.startswith("/news-events/news-releases/"):
+        # 仅保留 /news-events/nih-research-matters/xxx 详情页链接
+        if not parsed.path.startswith("/news-events/nih-research-matters/"):
             continue
 
         text = normalize_ws(a.get_text(" ").strip())
