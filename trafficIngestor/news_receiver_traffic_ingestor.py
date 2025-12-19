@@ -33,10 +33,10 @@ import threading
 
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/news_receiver'
-CSV_PATH = CODE_BASE_PATH + "/db/missing_pcap.csv"
-CONTAINER_PREFIX = "news_receiver"
+CSV_PATH =  "test.csv"
+CONTAINER_PREFIX = "traffic_ingestor"
 START_IDX = 0
-END_IDX = 0                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 2                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -405,50 +405,38 @@ def main():
 
     names = prepare_pool_once()
 
-    # 原来: while not stop_flag["stop"]:
-    while True:
-        try:
-            # 2) 读取任务
-            jobs, header_fields = read_jobs(CSV_PATH)
-            if not jobs:
-                # log("没有可处理的 URL，等待 10 分钟后重试…")
-                # 原来是循环里检测 stop_flag，这里直接一次 sleep；
-                # 收到信号会被 handler 立即终止进程。
-                # time.sleep(NO_TASK_SLEEP_SECONDS)
-                # continue
-                break
-            # 3) 调度执行
-            q: "queue.Queue[Dict[str, str]]" = queue.Queue()
-            for t in jobs:
-                q.put(t)
+    try:
+        # 读取任务
+        jobs, header_fields = read_jobs(CSV_PATH)
+        if not jobs:
+            log("没有可处理的任务，退出。")
+            return
 
-            stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
-            log(f"开始执行：jobs={len(jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
-            with ThreadPoolExecutor(max_workers=len(names)) as pool:
-                for n in names:
-                    pool.submit(worker_loop, n, q, stats, RETRY)
-                q.join()
+        # 调度执行
+        q: "queue.Queue[Dict[str, str]]" = queue.Queue()
+        for t in jobs:
+            q.put(t)
 
-            # 4) 汇总
-            log(f"[summary] success={stats['ok']} fail={stats['fail']} total={len(jobs)}")
-            if stats["errors"]:
-                log("失败样例：")
-                for task, err in stats["errors"][:10]:
-                    log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
+        stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
+        log(f"开始执行：jobs={len(jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            for n in names:
+                pool.submit(worker_loop, n, q, stats, RETRY)
+            q.join()
 
-            # 清空 CSV（保留表头）
-            # try:
-            #     reset_csv_with_header(CSV_PATH, header_fields)
-            # except Exception as e:
-            #     log(f"WARN: 清空 CSV 失败（不影响主循环）：{e}")
+        # 汇总
+        log(f"[summary] success={stats['ok']} fail={stats['fail']} total={len(jobs)}")
+        if stats["errors"]:
+            log("失败样例：")
+            for task, err in stats["errors"][:10]:
+                log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
 
-        except Exception as e:
-            log(f"WARN: 主循环异常：{e}")
-            # 原来按秒轮询 stop_flag；这里简单 sleep 一次即可。
-            time.sleep(10)
+    except Exception as e:
+        log(f"WARN: 执行异常：{e}")
 
+    # 等待并清理容器
     time.sleep(60)
-    subprocess.run('docker ps -aq -f "name=^news_receiver" | xargs -r docker rm -f', shell=True, check=False)
+    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
 
 
 if __name__ == "__main__":
