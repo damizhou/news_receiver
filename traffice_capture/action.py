@@ -78,6 +78,7 @@ def start_task():
                 ssl_key_file_path = old_result.get("ssl_key_file_path")
                 content_path = old_result.get("content_path")
                 html_path = old_result.get("html_path")
+                screenshot_path = old_result.get("screenshot_path")
                 # 删除文件
                 try:
                     if pcap_path and os.path.exists(pcap_path):
@@ -88,6 +89,8 @@ def start_task():
                         os.remove(content_path)
                     if html_path and os.path.exists(html_path):
                         os.remove(html_path)
+                    if html_path and os.path.exists(screenshot_path):
+                        os.remove(screenshot_path)
                 except Exception as e:
                     logger.error(f"删除旧文件失败: {e}")
 
@@ -103,7 +106,7 @@ def start_task():
     logger.info(f"创建浏览器")
     browser, ssl_key_file_path = create_chrome_driver(allowed_domain, formatted_time, f"{row_id}")
     logger.info(f"开始访问第{row_id}的词条：{url}")
-    content_path, html_path = open_url_and_save_content(browser, url, ssl_key_file_path)
+    content_path, html_path, screenshot_path = open_url_and_save_content(browser, url, ssl_key_file_path)
 
     try:
         browser.quit()  # 彻底退出，会回收 chromedriver 与子进程
@@ -136,6 +139,8 @@ def start_task():
                 os.remove(content_path)
             if os.path.exists(html_path):
                 os.remove(html_path)
+            if os.path.exists(screenshot_path):
+                os.remove(screenshot_path)
         except Exception as e:
             logger.error(f"删除不合格文件失败: {e}")
 
@@ -145,7 +150,7 @@ def start_task():
         start_task()
     else:
         result = {"pcap_path": pcap_path or "", "ssl_key_file_path": ssl_key_file_path or "", "content_path": content_path or "",
-            "html_path": html_path or "", "row_id": row_id}
+            "html_path": html_path or "", "row_id": row_id, "screenshot_path": screenshot_path}
         if not os.path.exists(os.path.dirname(meta_path)):
             os.makedirs(os.path.dirname(meta_path))
         with open(meta_path, "w", encoding="utf-8") as f:

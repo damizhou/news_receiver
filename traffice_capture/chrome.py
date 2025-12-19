@@ -3,10 +3,12 @@ from selenium.webdriver.chrome.options import Options
 import os
 from selenium.webdriver.chrome.service import Service
 from datetime import datetime
-import json
 import re
 import time
-
+import math
+from pathlib import Path
+from typing import Optional
+from selenium.webdriver.support.ui import WebDriverWait  # 从selenium.webdriver.support.wait改为支持ui
 
 JS_SELECT_ALL_AND_COPY_CAPTURE = r"""
 function __select_all_and_copy_capture(){
@@ -106,8 +108,7 @@ def create_chrome_driver(task_name, formatted_time, parsers):
     chrome_options.add_argument("--homepage=about:blank")
     chrome_options.add_argument("--log-net-log=/tmp/netlog.json")
     chrome_options.add_argument("--net-log-capture-mode=Everything")
-    chrome_options.add_argument("--ssl-version-min=tls1.2")
-    chrome_options.add_argument("--ssl-version-max=tls1.2")
+    print(f"SSL 密钥日志文件路径: {ssl_key_file_path}")
 
     # 设置实验性首选项
     prefs = {
@@ -129,10 +130,6 @@ def create_chrome_driver(task_name, formatted_time, parsers):
     service = Service(executable_path="/usr/local/bin/chromedriver")
     browser = webdriver.Chrome(service=service, options=chrome_options)
     browser.execute_cdp_cmd('Network.enable', {})
-    # browser.execute_cdp_cmd('Network.setBlockedURLs',
-    #                         {
-    #                             'urls': ['*://plausible.io/*', '*://*.plausible.io/*']
-    #                         })
     browser.execute_cdp_cmd('Network.setExtraHTTPHeaders', {'headers': {'Accept-Language': _ACCEPT_LANGUAGE}})
     browser.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument',
                             {'source': '''
@@ -142,9 +139,14 @@ def create_chrome_driver(task_name, formatted_time, parsers):
                             '''.strip()})
     return browser, ssl_key_file_path
 
-def open_url_and_save_content(driver, url, ssl_key_file_path):
+def open_url_and_save_content(driver, url, ssl_key_file_path, wait_secs=8):
     driver.get(url)
-    time.sleep(30)
+    WebDriverWait(driver, wait_secs).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    time.sleep(15)
+    screenshot_path = ssl_key_file_path.replace("_ssl_key.log", ".png").replace("/ssl_key/", "/screenshot/")
+    if not os.path.exists(os.path.dirname(screenshot_path)):
+        os.makedirs(os.path.dirname(screenshot_path))
+    screenshot_full_page(driver, Path(screenshot_path), dpr=2.0)
     script = JS_SELECT_ALL_AND_COPY_CAPTURE + "\nreturn __select_all_and_copy_capture();"
     res = driver.execute_script(script)
     if not isinstance(res, dict) or res.get("error"):
@@ -161,5 +163,41 @@ def open_url_and_save_content(driver, url, ssl_key_file_path):
         os.makedirs(os.path.dirname(html_path))
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
-    return content_path, html_path
+    return content_path, html_path, screenshot_path
 
+def screenshot_full_page(driver: webdriver.Chrome, out_path: Path, dpr: Optional[float] = None) -> None:
+    """整页长截图：通过 CDP 获取内容尺寸并原生捕获，不做滚动拼接。"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 计算页面内容尺寸
+    metrics = driver.execute_cdp_cmd("Page.getLayoutMetrics", {})
+    # contentSize 比 visualViewport 更可靠，含整个文档内容区域
+    content_size = metrics.get("contentSize", {})
+    width = int(math.ceil(content_size.get("width", 0) or 0))
+    height = int(math.ceil(content_size.get("height", 0) or 0))
+    if width == 0 or height == 0:
+        # 退路：用 JS 获取 body 尺寸
+        width = int(driver.execute_script("return Math.ceil(document.documentElement.scrollWidth||document.body.scrollWidth||0);"))
+        height = int(driver.execute_script("return Math.ceil(document.documentElement.scrollHeight||document.body.scrollHeight||0);"))
+
+    device_scale = float(dpr) if dpr and dpr > 0 else 1.0
+
+    # 覆盖设备度量，扩大视窗到整页尺寸
+    driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+        "mobile": False,
+        "width": width,
+        "height": height,
+        "deviceScaleFactor": device_scale,
+        "screenOrientation": {"type": "landscapePrimary", "angle": 0},
+    })
+
+    # 捕获位图（b64）
+    data = driver.execute_cdp_cmd("Page.captureScreenshot", {
+        "fromSurface": True,
+        "captureBeyondViewport": True
+    })
+    png_b64 = data.get("data")
+    out_path.write_bytes(base64.b64decode(png_b64))
+
+    # 恢复度量，避免影响后续操作
+    driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})

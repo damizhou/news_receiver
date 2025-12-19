@@ -32,15 +32,16 @@ import shutil
 import threading
 
 # ============== 配置 ==============
-CSV_PATH = "/home/pcz/news_receiver/db/missing_pcap.csv"
+CODE_BASE_PATH = '/home/pcz/news_receiver'
+CSV_PATH = CODE_BASE_PATH + "/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_receiver"
 START_IDX = 0
 END_IDX = 0                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = "/home/pcz/news_receiver/traffice_capture"  # ★ 按你要求固定
-DASE_DST = '/netdisk/news_receiver'
+HOST_CODE_PATH = CODE_BASE_PATH + "/traffice_capture"  # ★ 按你要求固定
+DASE_DST = '/netdisk/dataset/ablation_study'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
@@ -261,12 +262,13 @@ def exec_once(task: Dict[str, str]) -> (bool, str):
     print("执行命令", cmd)
     cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
     if cp.returncode == 0:
-        with open(f"/home/pcz/news_receiver/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
+        with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
             result = json.load(f)
-        pcap_path = result.get("pcap_path").replace("/app/", "/home/pcz/news_receiver/traffice_capture/")
-        ssl_key_file_path = result.get("ssl_key_file_path").replace("/app/", "/home/pcz/news_receiver/traffice_capture/")
-        content_path = result.get("content_path").replace("/app/", "/home/pcz/news_receiver/traffice_capture/")
-        html_path = result.get("html_path").replace("/app/", "/home/pcz/news_receiver/traffice_capture/")
+        pcap_path = result.get("pcap_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+        ssl_key_file_path = result.get("ssl_key_file_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+        content_path = result.get("content_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+        html_path = result.get("html_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+        screenshot_path = result.get("screenshot_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
         dst = os.path.join(DASE_DST, task['domain'])
         pcap_dst = os.path.join(dst, 'pcap')
         if not os.path.exists(pcap_dst):
@@ -280,6 +282,9 @@ def exec_once(task: Dict[str, str]) -> (bool, str):
         html_dst = os.path.join(dst, 'html')
         if not os.path.exists(html_dst):
             os.makedirs(html_dst)
+        screeshot_dst = os.path.join(dst, 'screenshot')
+        if not os.path.exists(screeshot_dst):
+            os.makedirs(screeshot_dst)
 
         new_pcap = shutil.move(pcap_path, pcap_dst)
         chown_recursive(new_pcap, uid=1002, gid=1002)
@@ -292,6 +297,9 @@ def exec_once(task: Dict[str, str]) -> (bool, str):
 
         new_html = shutil.move(html_path, html_dst)
         chown_recursive(new_html, uid=1002, gid=1002)
+
+        new_screeshot = shutil.move(screenshot_path, screeshot_dst)
+        chown_recursive(new_screeshot, uid=1002, gid=1002)
         return True, ""
     return False, (cp.stderr.strip() or cp.stdout.strip())
 
@@ -410,10 +418,10 @@ def main():
                     log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
 
             # 清空 CSV（保留表头）
-            try:
-                reset_csv_with_header(CSV_PATH, header_fields)
-            except Exception as e:
-                log(f"WARN: 清空 CSV 失败（不影响主循环）：{e}")
+            # try:
+            #     reset_csv_with_header(CSV_PATH, header_fields)
+            # except Exception as e:
+            #     log(f"WARN: 清空 CSV 失败（不影响主循环）：{e}")
 
         except Exception as e:
             log(f"WARN: 主循环异常：{e}")
