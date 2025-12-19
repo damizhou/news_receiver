@@ -89,7 +89,7 @@ def start_task():
                         os.remove(content_path)
                     if html_path and os.path.exists(html_path):
                         os.remove(html_path)
-                    if html_path and os.path.exists(screenshot_path):
+                    if screenshot_path and os.path.exists(screenshot_path):
                         os.remove(screenshot_path)
                 except Exception as e:
                     logger.error(f"删除旧文件失败: {e}")
@@ -99,6 +99,12 @@ def start_task():
     kill_tcpdump_processes()
     time.sleep(1)
 
+    # 初始化变量，防止异常时未定义
+    content_path = ""
+    html_path = ""
+    screenshot_path = ""
+    pcap_path = ""
+
     # 开流量收集
     traffic_thread = threading.Thread(target=traffic, kwargs={"index": row_id, "formatted_time":formatted_time} )
     traffic_thread.start()
@@ -106,7 +112,10 @@ def start_task():
     logger.info(f"创建浏览器")
     browser, ssl_key_file_path = create_chrome_driver(allowed_domain, formatted_time, f"{row_id}")
     logger.info(f"开始访问第{row_id}的词条：{url}")
-    content_path, html_path, screenshot_path = open_url_and_save_content(browser, url, ssl_key_file_path)
+    try:
+        content_path, html_path, screenshot_path = open_url_and_save_content(browser, url, ssl_key_file_path)
+    except Exception as e:
+        logger.error(f"open_url_and_save_content 异常: {e}")
 
     try:
         browser.quit()  # 彻底退出，会回收 chromedriver 与子进程
@@ -149,8 +158,15 @@ def start_task():
         time.sleep(5)
         start_task()
     else:
-        result = {"pcap_path": pcap_path or "", "ssl_key_file_path": ssl_key_file_path or "", "content_path": content_path or "",
-            "html_path": html_path or "", "row_id": row_id, "screenshot_path": screenshot_path}
+        # 只有校验通过时才写入有效路径，否则写入空字符串
+        if need_restart:
+            # 重试次数用尽但校验仍失败，写入空路径表示失败
+            result = {"pcap_path": "", "ssl_key_file_path": "", "content_path": "",
+                "html_path": "", "row_id": row_id, "screenshot_path": ""}
+            logger.warning(f"重试次数用尽，任务失败: row_id={row_id}")
+        else:
+            result = {"pcap_path": pcap_path or "", "ssl_key_file_path": ssl_key_file_path or "", "content_path": content_path or "",
+                "html_path": html_path or "", "row_id": row_id, "screenshot_path": screenshot_path or ""}
         if not os.path.exists(os.path.dirname(meta_path)):
             os.makedirs(os.path.dirname(meta_path))
         with open(meta_path, "w", encoding="utf-8") as f:

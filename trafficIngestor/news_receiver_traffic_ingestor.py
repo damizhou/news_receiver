@@ -26,7 +26,7 @@ import signal
 import queue
 import subprocess
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
@@ -52,6 +52,7 @@ EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自�
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
+_stats_lock = threading.Lock()
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
@@ -190,7 +191,7 @@ def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str
     return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
 
 
-def read_jobs(csv_path: str) -> (List[Dict[str, str]], List[str]):
+def read_jobs(csv_path: str) -> Tuple[List[Dict[str, str]], List[str]]:
     p = Path(csv_path)
     if not p.exists():
         return [], ["id", "url", "domain"]
@@ -250,7 +251,7 @@ def chown_recursive(path: str, uid: int = 1002, gid: int = 1002) -> None:
                 try: os.chown(p, uid, gid, follow_symlinks=False)
                 except Exception: pass
 
-def exec_once(task: Dict[str, str]) -> (bool, str):
+def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
     _wait_before_exec()
     payload = json.dumps(task, ensure_ascii=False)
     container = task["container"]
@@ -262,45 +263,59 @@ def exec_once(task: Dict[str, str]) -> (bool, str):
     print("执行命令", cmd)
     cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
     if cp.returncode == 0:
-        with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
-            result = json.load(f)
-        pcap_path = result.get("pcap_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-        ssl_key_file_path = result.get("ssl_key_file_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-        content_path = result.get("content_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-        html_path = result.get("html_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-        screenshot_path = result.get("screenshot_path").replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-        dst = os.path.join(DASE_DST, task['domain'])
-        pcap_dst = os.path.join(dst, 'pcap')
-        if not os.path.exists(pcap_dst):
-            os.makedirs(pcap_dst)
-        ssl_key_dst = os.path.join(dst, 'ssl_key')
-        if not os.path.exists(ssl_key_dst):
-            os.makedirs(ssl_key_dst)
-        content_dst = os.path.join(dst, 'content')
-        if not os.path.exists(content_dst):
-            os.makedirs(content_dst)
-        html_dst = os.path.join(dst, 'html')
-        if not os.path.exists(html_dst):
-            os.makedirs(html_dst)
-        screeshot_dst = os.path.join(dst, 'screenshot')
-        if not os.path.exists(screeshot_dst):
-            os.makedirs(screeshot_dst)
+        try:
+            with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
+                result = json.load(f)
 
-        new_pcap = shutil.move(pcap_path, pcap_dst)
-        chown_recursive(new_pcap, uid=1002, gid=1002)
+            pcap_path = result.get("pcap_path")
+            ssl_key_file_path = result.get("ssl_key_file_path")
+            content_path = result.get("content_path")
+            html_path = result.get("html_path")
+            screenshot_path = result.get("screenshot_path")
 
-        new_ssl = shutil.move(ssl_key_file_path, ssl_key_dst)
-        chown_recursive(new_ssl, uid=1002, gid=1002)
+            if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
+                return False, "result JSON missing required paths"
 
-        new_content = shutil.move(content_path, content_dst)
-        chown_recursive(new_content, uid=1002, gid=1002)
+            pcap_path = pcap_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            ssl_key_file_path = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            content_path = content_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            html_path = html_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            screenshot_path = screenshot_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
 
-        new_html = shutil.move(html_path, html_dst)
-        chown_recursive(new_html, uid=1002, gid=1002)
+            dst = os.path.join(DASE_DST, task['domain'])
+            pcap_dst = os.path.join(dst, 'pcap')
+            if not os.path.exists(pcap_dst):
+                os.makedirs(pcap_dst)
+            ssl_key_dst = os.path.join(dst, 'ssl_key')
+            if not os.path.exists(ssl_key_dst):
+                os.makedirs(ssl_key_dst)
+            content_dst = os.path.join(dst, 'content')
+            if not os.path.exists(content_dst):
+                os.makedirs(content_dst)
+            html_dst = os.path.join(dst, 'html')
+            if not os.path.exists(html_dst):
+                os.makedirs(html_dst)
+            screenshot_dst = os.path.join(dst, 'screenshot')
+            if not os.path.exists(screenshot_dst):
+                os.makedirs(screenshot_dst)
 
-        new_screeshot = shutil.move(screenshot_path, screeshot_dst)
-        chown_recursive(new_screeshot, uid=1002, gid=1002)
-        return True, ""
+            new_pcap = shutil.move(pcap_path, pcap_dst)
+            chown_recursive(new_pcap, uid=1002, gid=1002)
+
+            new_ssl = shutil.move(ssl_key_file_path, ssl_key_dst)
+            chown_recursive(new_ssl, uid=1002, gid=1002)
+
+            new_content = shutil.move(content_path, content_dst)
+            chown_recursive(new_content, uid=1002, gid=1002)
+
+            new_html = shutil.move(html_path, html_dst)
+            chown_recursive(new_html, uid=1002, gid=1002)
+
+            new_screenshot = shutil.move(screenshot_path, screenshot_dst)
+            chown_recursive(new_screenshot, uid=1002, gid=1002)
+            return True, ""
+        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+            return False, f"post-processing error: {e}"
     return False, (cp.stderr.strip() or cp.stdout.strip())
 
 
@@ -322,21 +337,25 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
             ok, err = exec_once(task)
             if ok:
                 log(f"{container} -> done  [{row_id}] {url}")
-                stats["ok"] += 1
+                with _stats_lock:
+                    stats["ok"] += 1
             else:
                 log(f"{container} -> fail  [{row_id}] {err[:200]}")
-                stats["fail"] += 1
-                stats["errors"].append((task, err))
+                with _stats_lock:
+                    stats["fail"] += 1
+                    stats["errors"].append((task, err))
         except subprocess.TimeoutExpired:
             err = f"timeout>{DOCKER_EXEC_TIMEOUT}s"
             log(f"{container} -> timeout [{row_id}] {url}")
-            stats["fail"] += 1
-            stats["errors"].append((task, err))
+            with _stats_lock:
+                stats["fail"] += 1
+                stats["errors"].append((task, err))
         except Exception as e:
             err = repr(e)
             log(f"{container} -> error [{row_id}] {err}")
-            stats["fail"] += 1
-            stats["errors"].append((task, err))
+            with _stats_lock:
+                stats["fail"] += 1
+                stats["errors"].append((task, err))
         finally:
             q.task_done()
 

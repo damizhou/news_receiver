@@ -1,6 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import os
+import base64
 from selenium.webdriver.chrome.service import Service
 from datetime import datetime
 import re
