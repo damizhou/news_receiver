@@ -7,7 +7,7 @@ run_news_receiver_pool.py
 - 每行转 JSON：{"row_id": id, "url": url, "domain": domain}
 - 使用容器池 news_receiver0..78 并发执行：
     docker exec <name> python -u /app/action.py '<JSON>'
-- 创建容器时：--init 防僵尸进程，并挂载 CODE_BASE_PATH + /traffice_capture:/app
+- 创建容器时：--init 防僵尸进程，并挂载 CODE_BASE_PATH + /single_traffice_capture:/app
 - 每个容器启动后执行一次：关闭包合并（tso/gso/gro off）
 
 长时间执行：
@@ -34,18 +34,18 @@ import threading
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH =  "test.csv"
-CONTAINER_PREFIX = "traffic_ingestor_single"
+CONTAINER_PREFIX = "single_traffic_ingestor"
 START_IDX = 0
 END_IDX = 2                      # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = CODE_BASE_PATH + "/traffice_capture"  # ★ 按你要求固定
+HOST_CODE_PATH = CODE_BASE_PATH + "/single_traffice_capture"  # ★ 按你要求固定
 DASE_DST = '/netdisk/dataset/ablation_study/single'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
-RETRY = 1                         # 失败重试次数（不含首次）
+RETRY = 5                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
@@ -264,7 +264,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
     cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
     if cp.returncode == 0:
         try:
-            with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
+            with open(CODE_BASE_PATH + f"/single_traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
                 result = json.load(f)
             print('result', result)
             pcap_path = result.get("pcap_path")
@@ -276,11 +276,11 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
                 return False, "result JSON missing required paths"
 
-            pcap_path = pcap_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-            ssl_key_file_path = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-            content_path = content_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-            html_path = html_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
-            screenshot_path = screenshot_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            pcap_path = pcap_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
+            ssl_key_file_path = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
+            content_path = content_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
+            html_path = html_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
+            screenshot_path = screenshot_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
             print('screenshot_path', screenshot_path)
             dst = os.path.join(DASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
@@ -440,6 +440,5 @@ def main():
 
 
 if __name__ == "__main__":
-    for i in range(100):
-        clear_host_code_subdirs()
-        main()
+    clear_host_code_subdirs()
+    main()

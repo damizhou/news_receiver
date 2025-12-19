@@ -28,12 +28,12 @@ import threading
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH = "test.csv"
-CONTAINER_PREFIX = "traffic_ingestor_batch"
+CONTAINER_PREFIX = "batch_traffic_ingestor"
 START_IDX = 0
 END_IDX = 2                      # 0..2 共 3 个容器
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = CODE_BASE_PATH + "/traffice_capture"
+HOST_CODE_PATH = CODE_BASE_PATH + "/batch_traffice_capture"
 DASE_DST = '/netdisk/dataset/ablation_study/batch'
 # =================================
 CREATE_WITH_TTY = True
@@ -254,7 +254,7 @@ def exec_batch(task: Dict[str, Any]) -> Tuple[bool, str]:
 
     if cp.returncode == 0:
         try:
-            with open(CODE_BASE_PATH + f"/traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
+            with open(CODE_BASE_PATH + f"/batch_traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
                 result = json.load(f)
 
             pcap_path = result.get("pcap_path")
@@ -269,14 +269,14 @@ def exec_batch(task: Dict[str, Any]) -> Tuple[bool, str]:
             # 移动 pcap
             pcap_dst = os.path.join(dst, 'pcap')
             os.makedirs(pcap_dst, exist_ok=True)
-            pcap_path_host = pcap_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            pcap_path_host = pcap_path.replace("/app/", CODE_BASE_PATH + "/batch_traffice_capture/")
             new_pcap = shutil.move(pcap_path_host, pcap_dst)
             chown_recursive(new_pcap)
 
             # 移动 ssl_key
             ssl_key_dst = os.path.join(dst, 'ssl_key')
             os.makedirs(ssl_key_dst, exist_ok=True)
-            ssl_key_path_host = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/traffice_capture/")
+            ssl_key_path_host = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/batch_traffice_capture/")
             new_ssl = shutil.move(ssl_key_path_host, ssl_key_dst)
             chown_recursive(new_ssl)
 
@@ -397,7 +397,7 @@ def main():
         log(f"WARN: 执行异常：{e}")
 
     time.sleep(60)
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
+    # subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
 
 if __name__ == "__main__":
     clear_host_code_subdirs()
