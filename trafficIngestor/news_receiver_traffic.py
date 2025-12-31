@@ -34,7 +34,7 @@ import threading
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
-CONTAINER_PREFIX = "news_traffic_ingestor"
+CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
 END_IDX = 19 * 1 - 1                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
@@ -264,7 +264,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
     cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
     if cp.returncode == 0:
         try:
-            with open(CODE_BASE_PATH + f"/single_traffice_capture/meta/{container}_last.json", "r", encoding="utf-8") as f:
+            with open(HOST_CODE_PATH + f"/meta/{container}_last.json", "r", encoding="utf-8") as f:
                 result = json.load(f)
             print('result', result)
             pcap_path = result.get("pcap_path")
@@ -276,11 +276,11 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
                 return False, "result JSON missing required paths"
 
-            pcap_path = pcap_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
-            ssl_key_file_path = ssl_key_file_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
-            content_path = content_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
-            html_path = html_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
-            screenshot_path = screenshot_path.replace("/app/", CODE_BASE_PATH + "/single_traffice_capture/")
+            pcap_path = pcap_path.replace("/app/", HOST_CODE_PATH)
+            ssl_key_file_path = ssl_key_file_path.replace("/app/", HOST_CODE_PATH)
+            content_path = content_path.replace("/app/", HOST_CODE_PATH)
+            html_path = html_path.replace("/app/", HOST_CODE_PATH)
+            screenshot_path = screenshot_path.replace("/app/", HOST_CODE_PATH)
             print('screenshot_path', screenshot_path)
             dst = os.path.join(DASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
@@ -456,9 +456,4 @@ def main():
 if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    # count = 120
-    # print(f"开始执行数据采集任务,共计{count}次")
-    # for i in range(120):
-    #     print(f'当前开始执行第{i+1}次')
-    #     main()
     main()

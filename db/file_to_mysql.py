@@ -69,7 +69,7 @@ def file_path_to_mysql(engine, domain: str):
     if not table:
         raise ValueError(f"unsupported domain: {domain}")
 
-    pcap_dir_path = '/netdisk/news_receiver' + f'/{domain}/pcap/'
+    pcap_dir_path = f'/netdisk/news_receiver/{domain}/pcap/'
     print(pcap_dir_path)
     pcap_paths = list_pcaps(pcap_dir_path)
 

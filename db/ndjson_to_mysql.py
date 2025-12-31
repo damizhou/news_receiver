@@ -90,7 +90,7 @@ def insert_bbc_ndjson(engine):
         :return: 实际插入的行数
         """
     items = []
-    with open("../bbc/bbc_zh_full.ndjson", "r", encoding="utf-8") as f:
+    with open("bbc_en_all.ndjson", "r", encoding="utf-8") as f:
         lines = f.readlines()
         for line in lines:
             try:
@@ -374,7 +374,7 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
             FROM {table}
             WHERE (pcap_path IS NULL OR pcap_path = '')
               AND url IS NOT NULL AND url <> ''
-            ORDER BY id LIMIT 10000
+            ORDER BY id 
         """
 
         with open(out_csv, "a", encoding="utf-8-sig", newline="") as f:
@@ -412,17 +412,17 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
 
 def main():
     engine, msg = connect_db()
-    for i in range(1):
-        # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
-        tables = ["bbc_content"]
-        # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
-        # tables = ["wikicontent"]
-        for table in tables:
-            export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
+    # for i in range(1):
+        # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
+        # tables = ["bbc_content"]
+        # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
+        # # tables = ["wikicontent"]
+        # for table in tables:
+        #     export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
     # insert_dailymail_ndjson(engine)
-    # insert_count = insert_bbc_ndjson(engine)
+    insert_count = insert_bbc_ndjson(engine)
     # insert_count = insert_forbes_ndjson(engine)
     # insert_count = insert_nih_ndjson(engine)
-    # print(f"Inserted {insert_count} rows into table")
+    print(f"Inserted {insert_count} rows into table")
 if __name__ == "__main__":
     main()

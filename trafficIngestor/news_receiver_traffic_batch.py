@@ -28,7 +28,7 @@ import threading
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH = "collected_request_urls_all.csv"
-CONTAINER_PREFIX = "batch_traffic_ingestor"
+CONTAINER_PREFIX = "batch_traffic_batch"
 START_IDX = 0
 END_IDX = 19 * 5 - 1                       # 0..2 共 3 个容器
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
@@ -402,8 +402,8 @@ def main():
 if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    # count = 120
-    # print(f"开始执行数据采集任务,共计{count}次")
-    # for i in range(120):
-    #     print(f'当前开始执行第{i + 1}次')
-    #     main()
+    count = 120
+    print(f"开始执行数据采集任务,共计{count}次")
+    for i in range(120):
+        print(f'当前开始执行第{i + 1}次')
+        main()

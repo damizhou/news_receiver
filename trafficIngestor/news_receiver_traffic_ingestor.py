@@ -33,7 +33,7 @@ import threading
 
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
-CSV_PATH =  "collected_request_urls_all.csv"
+CSV_PATH =  "collected_request_urls_update.csv"
 CONTAINER_PREFIX = "single_traffic_ingestor"
 START_IDX = 0
 END_IDX = 19 * 7 - 1                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
@@ -45,7 +45,7 @@ DASE_DST = '/netdisk/dataset/ablation_study/single'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
-RETRY = 5                         # 失败重试次数（不含首次）
+RETRY = 0                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
@@ -456,8 +456,8 @@ def main():
 if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    count = 120
+    count = 118
     print(f"开始执行数据采集任务,共计{count}次")
-    for i in range(120):
+    for i in range(count):
         print(f'当前开始执行第{i+1}次')
         main()
