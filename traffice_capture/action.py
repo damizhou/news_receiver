@@ -11,8 +11,8 @@ from logger import logger
 from chrome import create_chrome_driver, open_url_and_save_content
 current_index = 0
 allowed_domain = ""
-wiwi_pcap_lowest_size = 250000
-wiwi_ssl_key_lowest_size = 2000
+pcap_lowest_size = 100000
+ssl_key_lowest_size = 1000
 
 def _start_reaper():
     import threading, os, time
@@ -134,7 +134,7 @@ def start_task():
     ssl_key_file_size = os.path.getsize(ssl_key_file_path)
     logger.info(f"pcap文件大小：{pcap_file_size}，ssl_key文件大小：{ssl_key_file_size}")
     need_restart = False
-    if pcap_file_size > wiwi_pcap_lowest_size and ssl_key_file_size > wiwi_ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
+    if pcap_file_size > pcap_lowest_size and ssl_key_file_size > ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
         logger.info("数据文件校验通过")
     else:
         need_restart = True
@@ -154,6 +154,8 @@ def start_task():
             logger.error(f"删除不合格文件失败: {e}")
 
     if need_restart and current_index < 4:
+        logger.info(f"pcap_lowest_size:{pcap_lowest_size} > pcap_file_size:{pcap_file_size}")
+        logger.info(f"ssl_key_lowest_size:{ssl_key_lowest_size} > ssl_key_file_size:{ssl_key_file_size}")
         logger.info("流量文件大小未通过校验，准备重试")
         time.sleep(5)
         start_task()

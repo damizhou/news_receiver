@@ -7,7 +7,7 @@ run_news_receiver_pool.py
 - 每行转 JSON：{"row_id": id, "url": url, "domain": domain}
 - 使用容器池 news_receiver0..78 并发执行：
     docker exec <name> python -u /app/action.py '<JSON>'
-- 创建容器时：--init 防僵尸进程，并挂载 CODE_BASE_PATH + /single_traffice_capture:/app
+- 创建容器时：--init 防僵尸进程，并挂载 HOST_CODE_PATH:/app
 - 每个容器启动后执行一次：关闭包合并（tso/gso/gro off）
 
 长时间执行：
@@ -32,15 +32,14 @@ import shutil
 import threading
 
 # ============== 配置 ==============
-CODE_BASE_PATH = '/home/pcz/code/news_receiver'
 CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
-END_IDX = 19 * 1 - 1                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 18                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = CODE_BASE_PATH + "/traffice_capture"  # ★ 按你要求固定
+HOST_CODE_PATH = '/home/pcz/code/news_receiver/traffice_capture'  # ★ 按你要求固定
 DASE_DST = '/netdisk/news_receiver'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
@@ -276,11 +275,11 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
                 return False, "result JSON missing required paths"
 
-            pcap_path = pcap_path.replace("/app/", HOST_CODE_PATH)
-            ssl_key_file_path = ssl_key_file_path.replace("/app/", HOST_CODE_PATH)
-            content_path = content_path.replace("/app/", HOST_CODE_PATH)
-            html_path = html_path.replace("/app/", HOST_CODE_PATH)
-            screenshot_path = screenshot_path.replace("/app/", HOST_CODE_PATH)
+            pcap_path = pcap_path.replace("/app", HOST_CODE_PATH)
+            ssl_key_file_path = ssl_key_file_path.replace("/app", HOST_CODE_PATH)
+            content_path = content_path.replace("/app", HOST_CODE_PATH)
+            html_path = html_path.replace("/app", HOST_CODE_PATH)
+            screenshot_path = screenshot_path.replace("/app", HOST_CODE_PATH)
             print('screenshot_path', screenshot_path)
             dst = os.path.join(DASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
