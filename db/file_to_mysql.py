@@ -70,7 +70,7 @@ def file_path_to_mysql(engine, domain: str):
         raise ValueError(f"unsupported domain: {domain}")
 
     pcap_dir_path = f'/netdisk/news_receiver/{domain}/pcap/'
-    print(pcap_dir_path)
+    print(f"开始将{pcap_dir_path}新采集的数据，存入数据库。")
     pcap_paths = list_pcaps(pcap_dir_path)
 
     batch: List[Record] = []

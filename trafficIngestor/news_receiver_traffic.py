@@ -25,17 +25,19 @@ import json
 import signal
 import queue
 import subprocess
+import configparser
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
+from sqlalchemy import create_engine, text
 
 # ============== 配置 ==============
 CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
-END_IDX = 18                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 19 * 6 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -48,10 +50,122 @@ RETRY = 5                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
+DB_CONFIG_PATH = "/home/pcz/code/news_receiver/db/db_config.ini"
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
 _stats_lock = threading.Lock()
+_csv_lock = threading.Lock()  # 用于保护 CSV 文件的并发写入
+_db_engine = None  # 全局数据库引擎
+
+def connect_db():
+    """连接数据库并返回引擎"""
+    cp = configparser.ConfigParser(interpolation=None)
+    if not cp.read(DB_CONFIG_PATH, encoding="utf-8-sig"):
+        raise FileNotFoundError(f"未找到配置文件：{DB_CONFIG_PATH}")
+    if not cp.has_section("mysql"):
+        raise KeyError("缺少配置节 [mysql]")
+
+    c = cp["mysql"]
+
+    def need(k):
+        v = c.get(k, "").strip()
+        if not v:
+            raise ValueError(f"缺少 {k}")
+        return v
+
+    user = need("user")
+    pwd = need("password")
+    host = need("host")
+    port = need("port")
+    db = need("database")
+    url = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db}"
+
+    cs = c.get("charset", "").strip()
+    if cs:
+        url += f"?charset={cs}"
+
+    engine = create_engine(url, pool_pre_ping=True, future=True)
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return engine
+
+def get_table_name(domain: str) -> str:
+    """根据 domain 返回对应的表名"""
+    table_map = {
+        "bbc.com": "bbc_content",
+        "nih.gov": "nih_content",
+        "forbeschina.com": "forbeschina_content",
+        "dailymail.co.uk": "dailymail_content",
+    }
+    return table_map.get(domain, "")
+
+def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
+                                ssl_key_path: str, content_path: str, html_path: str) -> bool:
+    """上传单条记录到数据库"""
+    table = get_table_name(domain)
+    if not table:
+        log(f"WARN: 不支持的 domain: {domain}，跳过数据库上传")
+        return False
+
+    sql = f"""
+        UPDATE {table}
+        SET classify_status=%s,
+            traffic_status=%s,
+            pcap_path=%s,
+            ssl_key_path=%s,
+            content_path=%s,
+            html_path=%s,
+            traffic_feature=%s
+        WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
+    """.strip()
+
+    data = (0, 0, pcap_path, ssl_key_path, content_path, html_path, None, row_id)
+
+    conn = engine.raw_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, data)
+            affected = cur.rowcount
+        conn.commit()
+        return affected > 0
+    except Exception as e:
+        log(f"WARN: 数据库更新失败 row_id={row_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def remove_processed_from_csv(csv_path: str, row_id: str) -> None:
+    """从 CSV 中删除已处理成功的记录"""
+    with _csv_lock:
+        p = Path(csv_path)
+        if not p.exists():
+            return
+
+        # 读取所有行
+        with p.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                return
+            header_fields = list(reader.fieldnames)
+            rows = list(reader)
+
+        # 过滤掉已处理的记录
+        def get_id(row: Dict[str, str]) -> str:
+            for k, v in row.items():
+                if k.lower() == "id":
+                    return (v or "").strip()
+            return ""
+
+        remaining_rows = [r for r in rows if get_id(r) != row_id]
+
+        # 写回文件
+        with p.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=header_fields)
+            writer.writeheader()
+            writer.writerows(remaining_rows)
+
+        log(f"已从 CSV 删除记录 row_id={row_id}，剩余 {len(remaining_rows)} 条")
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
@@ -312,6 +426,25 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
 
             new_screenshot = shutil.move(screenshot_path, screenshot_dst)
             chown_recursive(new_screenshot, uid=1002, gid=1002)
+
+            # 上传到数据库
+            try:
+                row_id_int = int(task.get("row_id", "0"))
+                domain = task.get("domain", "")
+                if _db_engine and domain:
+                    db_ok = upload_single_record_to_db(
+                        _db_engine, domain, row_id_int,
+                        new_pcap, new_ssl, new_content, new_html
+                    )
+                    if db_ok:
+                        log(f"数据库更新成功 row_id={row_id_int}")
+                        # 从 CSV 删除已处理记录
+                        remove_processed_from_csv(CSV_PATH, task.get("row_id", ""))
+                    else:
+                        log(f"数据库更新失败或无匹配行 row_id={row_id_int}")
+            except Exception as e:
+                log(f"WARN: 数据库操作异常 row_id={task.get('row_id','')}: {e}")
+
             return True, ""
         except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
             return False, f"post-processing error: {e}"
@@ -413,8 +546,17 @@ def sig(signum, _frame):
         os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
 
 def main():
+    global _db_engine
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)
+
+    # 初始化数据库连接
+    try:
+        _db_engine = connect_db()
+        log("数据库连接成功")
+    except Exception as e:
+        log(f"WARN: 数据库连接失败，将跳过数据库上传: {e}")
+        _db_engine = None
 
     names = prepare_pool_once()
 
