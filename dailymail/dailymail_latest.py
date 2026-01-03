@@ -104,7 +104,7 @@ def append_ndjson(path: str, item: Article) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Fetch latest Daily Mail via daily archive, output NDJSON (无限抓取).")
-    ap.add_argument("--out", "-o", default="dailymail_all1.ndjson")
+    ap.add_argument("--out", "-o", default="dailymail_all.ndjson")
     ap.add_argument("--from-date", default=None)      # YYYY-MM-DD
     ap.add_argument("--max-days", type=int, default=36500)  # 默认约100年，实际无限
     ap.add_argument("--sleep", type=float, default=0.6)

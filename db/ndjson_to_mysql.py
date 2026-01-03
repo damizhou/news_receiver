@@ -231,54 +231,84 @@ def insert_forbes_ndjson(engine):
                 inserted += len(to_insert)
     return inserted
 
-def insert_dailymail_ndjson(engine):
+def insert_dailymail_ndjson(engine, batch_size=1000, skip_lines=0):
     """
-        将 items（dict 列表）写入表 bbc_content，按 link/url 去重。
-        仅写入列：title, summary, url, published, updated。
-        - items 中 url 取优先级：item["link"] or item["url"]
-        - 批量去重策略：同一批先查已存在 url，再批量插入剩余。
-        - 时间字段支持 ISO8601（含 Z），转换为 UTC 无时区 datetime（MySQL TIMESTAMP 接受）。
+        将 ndjson 文件批量写入表 dailymail_content，按 url 去重。
+        采用流式读取，每 batch_size 条处理一次，避免内存占用过大。
 
-        :param items: 形如 [{'title':..., 'summary':..., 'link':..., 'published':..., 'updated':...}, ...]
         :param engine: SQLAlchemy Engine（已连到 MySQL）
+        :param batch_size: 每批处理的行数，默认 1000
+        :param skip_lines: 跳过文件前 N 行（用于断点续传）
         :return: 实际插入的行数
         """
-    items = []
-    with open("../dailymail/dailymail_latest_1000.ndjson", "r", encoding="utf-8") as f:
-        lines = f.readlines()
-        for line in lines:
-            try:
-                data = json.loads(line.strip())
-                items.append(data)
-            except Exception:
-                continue
-    # 预处理 + 批内去重（同一 url 只保留第一条）
-    normalized, seen = [], set()
-    for it in items or []:
-        url = it.get("url") .strip()
-        if not url or url in seen:  # 无链接或批内重复跳过
-            continue
-        seen.add(url)
-        normalized.append({"title": it.get("title"), "summary": "", "url": url,
-            "published": parse_ts(it.get("date")), "updated": f"{datetime.now()}" })
-    if not normalized:
-        return 0
-
     sel = text("SELECT url FROM dailymail_content WHERE url IN :urls").bindparams(bindparam("urls", expanding=True))
     ins = text("""
             INSERT INTO dailymail_content (title, summary, url, published, updated)
             VALUES (:title, :summary, :url, :published, :updated)
         """)
 
+    total_inserted = 0
+    total_read = 0
+    batch_num = 0
+    seen_global = set()  # 全局去重，避免跨批次重复
+
+    if skip_lines > 0:
+        print(f"[跳过] 前 {skip_lines} 行已处理，从第 {skip_lines + 1} 行开始...")
+
+    with open("../dailymail/dailymail_all.ndjson", "r", encoding="utf-8") as f:
+        batch = []
+        for line in f:
+            total_read += 1
+            # 跳过已处理的行
+            if total_read <= skip_lines:
+                continue
+            try:
+                data = json.loads(line.strip())
+                url = data.get("url", "").strip()
+                if not url or url in seen_global:
+                    continue
+                seen_global.add(url)
+                batch.append({
+                    "title": data.get("title"),
+                    "summary": "",
+                    "url": url,
+                    "published": parse_ts(data.get("date")),
+                    "updated": f"{datetime.now()}"
+                })
+            except Exception:
+                continue
+
+            # 达到批次大小，执行写入
+            if len(batch) >= batch_size:
+                batch_num += 1
+                inserted = _insert_batch(engine, sel, ins, batch)
+                total_inserted += inserted
+                print(f"[批次 {batch_num}] 已读取 {total_read} 行，本批写入 {inserted} 条，累计写入 {total_inserted} 条")
+                batch = []
+
+        # 处理最后一批
+        if batch:
+            batch_num += 1
+            inserted = _insert_batch(engine, sel, ins, batch)
+            total_inserted += inserted
+            print(f"[批次 {batch_num}] 已读取 {total_read} 行，本批写入 {inserted} 条，累计写入 {total_inserted} 条")
+
+    print(f"[完成] 共读取 {total_read} 行，实际写入 {total_inserted} 条")
+    return total_inserted
+
+
+def _insert_batch(engine, sel, ins, batch):
+    """执行单批次的去重和插入"""
+    if not batch:
+        return 0
     inserted = 0
     with engine.begin() as conn:
-        for batch in chunks(normalized, 100):
-            # 批量查询已有 url
-            exist = set(r[0] for r in conn.execute(sel, {"urls": [row["url"] for row in batch]}))
-            to_insert = [row for row in batch if row["url"] not in exist]
+        # 分小块查询和插入（每 100 条一组查询数据库）
+        for sub_batch in chunks(batch, 100):
+            exist = set(r[0] for r in conn.execute(sel, {"urls": [row["url"] for row in sub_batch]}))
+            to_insert = [row for row in sub_batch if row["url"] not in exist]
             if to_insert:
-                conn.execute(ins, to_insert)  # executemany
-                print(f'插入了{to_insert}条数据')
+                conn.execute(ins, to_insert)
                 inserted += len(to_insert)
     return inserted
 
@@ -412,17 +442,17 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
 
 def main():
     engine, msg = connect_db()
-    for i in range(1):
-        # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
-        tables = ["bbc_content"]
-        # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
-        # # tables = ["wikicontent"]
-        for table in tables:
-            export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
-    # insert_dailymail_ndjson(engine)
+    # for i in range(1):
+    #     # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
+    #     tables = ["bbc_content"]
+    #     # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
+    #     # # tables = ["wikicontent"]
+    #     for table in tables:
+    #         export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
+    insert_count = insert_dailymail_ndjson(engine, skip_lines=7700000)
     # insert_count = insert_bbc_ndjson(engine)
     # insert_count = insert_forbes_ndjson(engine)
     # insert_count = insert_nih_ndjson(engine)
-    # print(f"Inserted {insert_count} rows into table")
+    print(f"Inserted {insert_count} rows into table")
 if __name__ == "__main__":
     main()

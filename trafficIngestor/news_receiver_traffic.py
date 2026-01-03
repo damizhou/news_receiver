@@ -37,7 +37,7 @@ from sqlalchemy import create_engine, text
 CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
-END_IDX = 19 * 6 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 19 * 8 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
