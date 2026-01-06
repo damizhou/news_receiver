@@ -404,7 +404,7 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
             FROM {table}
             WHERE (pcap_path IS NULL OR pcap_path = '')
             AND url IS NOT NULL AND url <> ''
-            LIMIT 250000
+            ORDER BY id LIMIT 250000
         """
 
         with open(out_csv, "a", encoding="utf-8-sig", newline="") as f:

@@ -134,29 +134,11 @@ def start_task():
     ssl_key_file_size = os.path.getsize(ssl_key_file_path)
     logger.info(f"pcap文件大小：{pcap_file_size}，ssl_key文件大小：{ssl_key_file_size}")
     need_restart = False
-    page_not_found = False
-
-    # 检查HTML是否包含页面未找到的错误信息（仅限BBC）
-    if "bbc" in allowed_domain and os.path.exists(html_path):
-        try:
-            with open(html_path, "r", encoding="utf-8") as f:
-                html_content = f.read()
-                if "Sorry, we couldn’t find that page" in html_content or "Page cannot be found" in html_content or "Check the page address or search for it below" in html_content or "Sorry, we're unable to bring you the page you're looking for" in html_content:
-                    logger.warning("页面未找到：HTML包含404错误信息")
-                    page_not_found = True
-        except Exception as e:
-            logger.error(f"读取HTML文件失败: {e}")
-
-    if page_not_found:
-        # 页面未找到，校验不通过但不重试
-        logger.warning("页面不存在，跳过重试")
-    elif pcap_file_size > pcap_lowest_size and ssl_key_file_size > ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
+    if pcap_file_size > pcap_lowest_size and ssl_key_file_size > ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
         logger.info("数据文件校验通过")
     else:
         need_restart = True
-
-    # 校验不通过时删除文件（page_not_found 或 need_restart）
-    if page_not_found or need_restart:
+        # 删除不合格的文件
         try:
             if os.path.exists(pcap_path):
                 os.remove(pcap_path)
@@ -179,14 +161,11 @@ def start_task():
         start_task()
     else:
         # 只有校验通过时才写入有效路径，否则写入空字符串
-        if need_restart or page_not_found:
-            # 重试次数用尽或页面不存在，写入空路径表示失败
+        if need_restart:
+            # 重试次数用尽但校验仍失败，写入空路径表示失败
             result = {"pcap_path": "", "ssl_key_file_path": "", "content_path": "",
                 "html_path": "", "row_id": row_id, "screenshot_path": ""}
-            if page_not_found:
-                logger.warning(f"页面不存在，任务失败: row_id={row_id}")
-            else:
-                logger.warning(f"重试次数用尽，任务失败: row_id={row_id}")
+            logger.warning(f"重试次数用尽，任务失败: row_id={row_id}")
         else:
             result = {"pcap_path": pcap_path or "", "ssl_key_file_path": ssl_key_file_path or "", "content_path": content_path or "",
                 "html_path": html_path or "", "row_id": row_id, "screenshot_path": screenshot_path or ""}
