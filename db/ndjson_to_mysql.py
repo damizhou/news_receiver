@@ -403,8 +403,8 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
             SELECT id, url
             FROM {table}
             WHERE (pcap_path IS NULL OR pcap_path = '')
-              AND url IS NOT NULL AND url <> ''
-            ORDER BY id 
+            AND url IS NOT NULL AND url <> ''
+            LIMIT 250000
         """
 
         with open(out_csv, "a", encoding="utf-8-sig", newline="") as f:
@@ -442,17 +442,17 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
 
 def main():
     engine, msg = connect_db()
-    # for i in range(1):
-    #     # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
-    #     tables = ["bbc_content"]
-    #     # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
-    #     # # tables = ["wikicontent"]
-    #     for table in tables:
-    #         export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
-    insert_count = insert_dailymail_ndjson(engine, skip_lines=7700000)
-    # insert_count = insert_bbc_ndjson(engine)
-    # insert_count = insert_forbes_ndjson(engine)
-    # insert_count = insert_nih_ndjson(engine)
-    print(f"Inserted {insert_count} rows into table")
+    for i in range(1):
+        # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
+        tables = ["bbc_content"]
+        # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
+        # # tables = ["wikicontent"]
+        for table in tables:
+            export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")
+    # insert_count = insert_dailymail_ndjson(engine, skip_lines=7700000)
+    # # insert_count = insert_bbc_ndjson(engine)
+    # # insert_count = insert_forbes_ndjson(engine)
+    # # insert_count = insert_nih_ndjson(engine)
+    # print(f"Inserted {insert_count} rows into table")
 if __name__ == "__main__":
     main()

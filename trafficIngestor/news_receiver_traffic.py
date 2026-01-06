@@ -37,7 +37,7 @@ from sqlalchemy import create_engine, text
 CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
-END_IDX = 19 * 8 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 29 * 12 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -136,7 +136,8 @@ def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
         conn.close()
 
 def remove_processed_from_csv(csv_path: str, row_id: str) -> None:
-    """从 CSV 中删除已处理成功的记录"""
+    """从 CSV 中删除已处理成功的记录（原子写入，防止中断丢失数据）"""
+    import tempfile
     with _csv_lock:
         p = Path(csv_path)
         if not p.exists():
@@ -159,13 +160,24 @@ def remove_processed_from_csv(csv_path: str, row_id: str) -> None:
 
         remaining_rows = [r for r in rows if get_id(r) != row_id]
 
-        # 写回文件
-        with p.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=header_fields)
-            writer.writeheader()
-            writer.writerows(remaining_rows)
-
-        log(f"已从 CSV 删除记录 row_id={row_id}，剩余 {len(remaining_rows)} 条")
+        # 原子写入：先写临时文件，再重命名
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=p.parent, suffix=".tmp", prefix=".csv_"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=header_fields)
+                writer.writeheader()
+                writer.writerows(remaining_rows)
+            os.replace(tmp_path, csv_path)  # 原子操作
+            log(f"已从 CSV 删除记录 row_id={row_id}，剩余 {len(remaining_rows)} 条")
+        except Exception:
+            # 失败时删除临时文件
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
