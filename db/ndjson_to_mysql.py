@@ -371,7 +371,7 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
       2) 计算 b = 10000 - a
       3) 只导出 b 条缺失 pcap 的记录到 CSV（b <= 0 时不导出）
     """
-    print("开始查找未处理的数据。")
+    print(f"开始查找{table}未处理的数据。")
     total = 10000
 
     p = Path(out_csv)
@@ -404,7 +404,7 @@ def export_missing_pcap_csv(engine, table: str,out_csv: str | None = None,) -> i
             FROM {table}
             WHERE (pcap_path IS NULL OR pcap_path = '')
             AND url IS NOT NULL AND url <> ''
-            ORDER BY id LIMIT 250000
+            ORDER BY id
         """
 
         with open(out_csv, "a", encoding="utf-8-sig", newline="") as f:
@@ -444,8 +444,8 @@ def main():
     engine, msg = connect_db()
     for i in range(1):
         # # tables = ["dailymail_content", "bbc_content", "nih_content", "forbeschina_content"]
-        tables = ["bbc_content"]
-        # # tables = ["nih_content", "forbeschina_content", , "theguardian_content", "wikicontent"]
+        tables = ["dailymail_content"]
+        # # tables = ["nih_content", "forbeschina_content", "dailymail_content", "theguardian_content", "wikicontent"]
         # # tables = ["wikicontent"]
         for table in tables:
             export_missing_pcap_csv(engine, table=table, out_csv=f"missing_pcap.csv")

@@ -25,179 +25,105 @@ import json
 import signal
 import queue
 import subprocess
-import configparser
+import tempfile
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
-from sqlalchemy import create_engine, text
 
 # ============== 配置 ==============
-CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap_more.csv"
-CONTAINER_PREFIX = "news_traffic"
+CSV_PATH =  "/home/pcz/code/news_receiver/db/users_converted.csv"
+CONTAINER_PREFIX = "x_traffic"
 START_IDX = 0
-END_IDX = 21 * 10 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 21 * 12 - 1                   # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = '/home/pcz/code/news_receiver/traffice_capture'  # ★ 按你要求固定
-DASE_DST = '/netdisk/news_receiver'
+HOST_CODE_PATH = '/home/pcz/code/news_receiver/traffice_capture_x'  # ★ 按你要求固定
+DASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260109'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
-RETRY = 2                         # 失败重试次数（不含首次）
+RETRY = 5                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
-BATCH_SIZE = 10000                # 每批处理任务数
 DB_CONFIG_PATH = "/home/pcz/code/news_receiver/db/db_config.ini"
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
 _stats_lock = threading.Lock()
 _csv_lock = threading.Lock()  # 用于保护 CSV 文件的并发写入
-_db_engine = None  # 全局数据库引擎
 
-# ============== 完成统计相关 ==============
-_task_start_time: float = 0.0  # 任务开始时间
-_completion_times: List[float] = []  # 每个任务的完成耗时（秒）
-_last_stats_print_time: float = 0.0  # 上次打印统计的时间
-STATS_PRINT_INTERVAL = 60  # 每60秒打印一次统计
+def remove_processed_from_csv(csv_path: str, row_id: str) -> None:
+    """从 CSV 中删除已处理成功的记录（原子写入，防止中断丢失数据）"""
+    # 1. 预处理目标 ID (去空格)
+    target_id = str(row_id).strip()
+    if not target_id:
+        return
 
-def connect_db():
-    """连接数据库并返回引擎"""
-    cp = configparser.ConfigParser(interpolation=None)
-    if not cp.read(DB_CONFIG_PATH, encoding="utf-8-sig"):
-        raise FileNotFoundError(f"未找到配置文件：{DB_CONFIG_PATH}")
-    if not cp.has_section("mysql"):
-        raise KeyError("缺少配置节 [mysql]")
-
-    c = cp["mysql"]
-
-    def need(k):
-        v = c.get(k, "").strip()
-        if not v:
-            raise ValueError(f"缺少 {k}")
-        return v
-
-    user = need("user")
-    pwd = need("password")
-    host = need("host")
-    port = need("port")
-    db = need("database")
-    url = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db}"
-
-    cs = c.get("charset", "").strip()
-    if cs:
-        url += f"?charset={cs}"
-
-    engine = create_engine(url, pool_pre_ping=True, future=True)
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    return engine
-
-def get_table_name(domain: str) -> str:
-    """根据 domain 返回对应的表名"""
-    table_map = {
-        "bbc.com": "bbc_content",
-        "nih.gov": "nih_content",
-        "forbeschina.com": "forbeschina_content",
-        "dailymail.co.uk": "dailymail_content",
-    }
-    return table_map.get(domain, "")
-
-def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
-                                ssl_key_path: str, content_path: str, html_path: str) -> bool:
-    """上传单条记录到数据库"""
-    table = get_table_name(domain)
-    if not table:
-        log(f"WARN: 不支持的 domain: {domain}，跳过数据库上传")
-        return False
-
-    sql = f"""
-        UPDATE {table}
-        SET classify_status=%s,
-            traffic_status=%s,
-            pcap_path=%s,
-            ssl_key_path=%s,
-            content_path=%s,
-            html_path=%s,
-            traffic_feature=%s
-        WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
-    """.strip()
-
-    data = (0, 0, pcap_path, ssl_key_path, content_path, html_path, None, row_id)
-
-    conn = engine.raw_connection()
     try:
-        with conn.cursor() as cur:
-            cur.execute(sql, data)
-            affected = cur.rowcount
-        conn.commit()
-        return affected > 0
-    except Exception as e:
-        log(f"WARN: 数据库更新失败 row_id={row_id}: {e}")
-        return False
-    finally:
-        conn.close()
+        # 使用锁防止多线程并发写入冲突
+        with _csv_lock:
+            p = Path(csv_path)
+            if not p.exists():
+                log(f"ERROR: CSV文件不存在: {csv_path}")
+                return
 
-def remove_batch_from_csv(csv_path: str, row_ids: set) -> int:
-    """
-    从 CSV 中批量删除已处理成功的记录（原子写入，防止中断丢失数据）
-    返回: 实际删除的记录数
-    """
-    if not row_ids:
-        return 0
+            # --- 读取阶段 ---
+            with p.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames is None:
+                    log("WARN: CSV为空或无表头")
+                    return
+                header_fields = list(reader.fieldnames)
+                rows = list(reader)
 
-    import tempfile
-    with _csv_lock:
-        p = Path(csv_path)
-        if not p.exists():
-            return 0
+            # 辅助函数：忽略大小写和空格获取 ID
+            def get_row_id_value(row: Dict[str, str]) -> str:
+                for k, v in row.items():
+                    if k and k.strip().lower() == "id":
+                        return (v or "").strip()
+                return ""
 
-        # 读取所有行
-        with p.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            if reader.fieldnames is None:
-                return 0
-            header_fields = list(reader.fieldnames)
-            rows = list(reader)
+            # --- 过滤阶段 (逻辑已修改) ---
+            remaining_rows = []
+            deleted = False  # 标记是否已经删除过
 
-        original_count = len(rows)
+            for r in rows:
+                # 只有当 “还没删除过” 且 “ID匹配” 时，才执行删除（即跳过 append）
+                if not deleted and get_row_id_value(r) == target_id:
+                    deleted = True
+                    continue
+                remaining_rows.append(r)
 
-        # 过滤掉已处理的记录
-        def get_id(row: Dict[str, str]) -> str:
-            for k, v in row.items():
-                if k.lower() == "id":
-                    return (v or "").strip()
-            return ""
+            # --- 检查结果 ---
+            original_count = len(rows)
+            if len(remaining_rows) == original_count:
+                log(f"WARN: 未找到 ID={target_id}，无需删除。")
+                return
 
-        remaining_rows = [r for r in rows if get_id(r) not in row_ids]
-        deleted_count = original_count - len(remaining_rows)
-
-        if deleted_count == 0:
-            return 0
-
-        # 原子写入：先写临时文件，再重命名
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=p.parent, suffix=".tmp", prefix=".csv_"
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8-sig", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=header_fields)
-                writer.writeheader()
-                writer.writerows(remaining_rows)
-            os.replace(tmp_path, csv_path)  # 原子操作
-            log(f"批量删除 CSV 记录: 删除 {deleted_count} 条，剩余 {len(remaining_rows)} 条")
-            return deleted_count
-        except Exception:
-            # 失败时删除临时文件
+            # --- 写入阶段 (原子操作) ---
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=p.parent, suffix=".tmp", prefix=".users_converted_")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(tmp_fd, "w", encoding="utf-8-sig", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=header_fields)
+                    writer.writeheader()
+                    writer.writerows(remaining_rows)
+
+                os.replace(tmp_path, csv_path)
+                log(f"SUCCESS: 已删除一条 ID={target_id}，剩余 {len(remaining_rows)} 条")
+
+            except Exception as write_err:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise write_err
+
+    except Exception as e:
+        log(f"FATAL: 删除CSV记录失败 (row_id={row_id}): {e}")
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
@@ -240,47 +166,6 @@ def log(*a):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}]", *a, flush=True)
 
-def record_task_completion(duration: float) -> None:
-    """记录任务完成耗时"""
-    with _stats_lock:
-        _completion_times.append(duration)
-
-def print_stats(stats: dict, force: bool = False) -> None:
-    """
-    打印统计信息：
-    - 总体每分钟完成数
-    - 平均一个容器完成一次任务的时间
-    """
-    global _last_stats_print_time
-
-    now = time.monotonic()
-    if not force and (now - _last_stats_print_time) < STATS_PRINT_INTERVAL:
-        return
-
-    with _stats_lock:
-        _last_stats_print_time = now
-        completed = stats["ok"]
-        elapsed_seconds = now - _task_start_time
-
-        if elapsed_seconds <= 0:
-            return
-
-        elapsed_minutes = elapsed_seconds / 60.0
-
-        # 每分钟完成数
-        tasks_per_minute = completed / elapsed_minutes if elapsed_minutes > 0 else 0
-
-        # 平均每个容器完成一次任务的时间
-        if _completion_times:
-            avg_task_time = sum(_completion_times) / len(_completion_times)
-        else:
-            avg_task_time = 0
-
-        log(f"[统计] 运行时间: {elapsed_minutes:.1f}分钟 | "
-            f"已完成: {completed} | "
-            f"每分钟完成: {tasks_per_minute:.2f} | "
-            f"平均任务耗时: {avg_task_time:.1f}秒")
-
 def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
 
@@ -310,7 +195,6 @@ def create_container(name: str, host_code_path: str, image: str):
         "--volume", f"{host_code_path}:{CONTAINER_CODE_PATH}",
         "-e", f"HOST_UID={uid}",
         "-e", f"HOST_GID={gid}",
-        "-e", f"CONTAINER_NAME={name}",
         "--privileged",
     ]
     if CREATE_WITH_TTY:
@@ -378,11 +262,7 @@ def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str
     return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
 
 
-def read_jobs_batch(csv_path: str, batch_size: int = BATCH_SIZE) -> Tuple[List[Dict[str, str]], List[str]]:
-    """
-    批量读取 CSV 前 batch_size 条有效任务。
-    返回: (jobs列表, header字段列表)
-    """
+def read_jobs(csv_path: str) -> Tuple[List[Dict[str, str]], List[str]]:
     p = Path(csv_path)
     if not p.exists():
         return [], ["id", "url", "domain"]
@@ -405,11 +285,9 @@ def read_jobs_batch(csv_path: str, batch_size: int = BATCH_SIZE) -> Tuple[List[D
             rid = get_case_insensitive(r, "id")
             url = get_case_insensitive(r, "url")
             dom = get_case_insensitive(r, "domain")
-            if not url or '/-/' in url:
+            if not url:
                 continue
             jobs.append({"row_id": rid, "url": url, "domain": dom})
-            if len(jobs) >= batch_size:
-                break  # 达到批次大小，停止读取
 
     return jobs, header_fields
 
@@ -444,11 +322,7 @@ def chown_recursive(path: str, uid: int = 1002, gid: int = 1002) -> None:
                 try: os.chown(p, uid, gid, follow_symlinks=False)
                 except Exception: pass
 
-def exec_once(task: Dict[str, str]) -> Tuple[bool, str, bool]:
-    """
-    执行单次任务。
-    返回: (成功与否, 错误信息, 是否应从CSV删除)
-    """
+def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
     _wait_before_exec()
     payload = json.dumps(task, ensure_ascii=False)
     container = task["container"]
@@ -471,24 +345,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str, bool]:
             screenshot_path = result.get("screenshot_path")
 
             if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
-                # 任务失败，写入 error 到数据库
-                should_remove = False
-                try:
-                    row_id_int = int(task.get("row_id", "0"))
-                    domain = task.get("domain", "")
-                    if _db_engine and domain:
-                        db_ok = upload_single_record_to_db(
-                            _db_engine, domain, row_id_int,
-                            "error", "", "", ""
-                        )
-                        if db_ok:
-                            log(f"任务失败，已写入 error 到数据库 row_id={row_id_int}")
-                            should_remove = True  # DB更新成功，可从CSV删除
-                        else:
-                            log(f"任务失败，数据库更新失败 row_id={row_id_int}")
-                except Exception as e:
-                    log(f"WARN: 任务失败时数据库操作异常 row_id={task.get('row_id','')}: {e}")
-                return False, "result JSON missing required paths", should_remove
+                return False, "result JSON missing required paths"
 
             pcap_path = pcap_path.replace("/app", HOST_CODE_PATH)
             ssl_key_file_path = ssl_key_file_path.replace("/app", HOST_CODE_PATH)
@@ -496,7 +353,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str, bool]:
             html_path = html_path.replace("/app", HOST_CODE_PATH)
             screenshot_path = screenshot_path.replace("/app", HOST_CODE_PATH)
             print('screenshot_path', screenshot_path)
-            dst = os.path.join(DASE_DST, task['domain'])
+            dst = DASE_DST
             pcap_dst = os.path.join(dst, 'pcap')
             if not os.path.exists(pcap_dst):
                 os.makedirs(pcap_dst)
@@ -528,34 +385,15 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str, bool]:
             new_screenshot = shutil.move(screenshot_path, screenshot_dst)
             chown_recursive(new_screenshot, uid=1002, gid=1002)
 
-            # 上传到数据库
-            should_remove = False
-            try:
-                row_id_int = int(task.get("row_id", "0"))
-                domain = task.get("domain", "")
-                if _db_engine and domain:
-                    db_ok = upload_single_record_to_db(
-                        _db_engine, domain, row_id_int,
-                        new_pcap, new_ssl, new_content, new_html
-                    )
-                    if db_ok:
-                        log(f"数据库更新成功 row_id={row_id_int}")
-                        should_remove = True  # DB更新成功，可从CSV删除
-                    else:
-                        log(f"数据库更新失败或无匹配行 row_id={row_id_int}")
-            except Exception as e:
-                log(f"WARN: 数据库操作异常 row_id={task.get('row_id','')}: {e}")
-
-            return True, "", should_remove
+            return True, ""
         except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            return False, f"post-processing error: {e}", False
-    return False, (cp.stderr.strip() or cp.stdout.strip()), False
+            return False, f"post-processing error: {e}"
+    return False, (cp.stderr.strip() or cp.stdout.strip())
 
 
 def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, retry: int):
     """
     带重试的 worker：每个任务最多尝试 retry+1 次（首次 + retry 次重试）
-    stats["processed_ids"] 用于收集需要从 CSV 删除的 row_id
     """
     while True:
         try:
@@ -568,8 +406,6 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
 
         ok = False
         err = ""
-        should_remove = False
-        task_start = time.monotonic()  # 记录任务开始时间
         for attempt in range(retry + 1):  # 首次 + retry 次重试
             try:
                 if attempt == 0:
@@ -577,26 +413,16 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
                 else:
                     log(f"{container} -> retry {attempt}/{retry} [{row_id}] {url}")
 
-                ok, err, should_remove = exec_once(task)
+                ok, err = exec_once(task)
                 if ok:
-                    task_duration = time.monotonic() - task_start  # 计算任务耗时
-                    record_task_completion(task_duration)  # 记录耗时
-                    log(f"{container} -> done  [{row_id}] {url} (耗时: {task_duration:.1f}秒)")
+                    log(f"{container} -> done  [{row_id}] {url}")
                     with _stats_lock:
                         stats["ok"] += 1
-                        if should_remove and row_id:
-                            stats["processed_ids"].add(row_id)
-                    print_stats(stats)  # 定期打印统计
                     break  # 成功，跳出重试循环
                 else:
                     log(f"{container} -> fail  [{row_id}] {err[:200]}")
-                    # 即使失败，如果 should_remove 为 True（已写入error到DB），也要收集
-                    if should_remove and row_id:
-                        with _stats_lock:
-                            stats["processed_ids"].add(row_id)
-                        break  # 已处理（写入error），不再重试
                     if attempt < retry:
-                        time.sleep(retry * 5)  # 重试前等待 5 秒
+                        time.sleep(5)  # 重试前等待 5 秒
 
             except subprocess.TimeoutExpired:
                 err = f"timeout>{DOCKER_EXEC_TIMEOUT}s"
@@ -611,12 +437,18 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
                     time.sleep(5)
 
         # 所有重试都失败
-        if not ok and not should_remove:
+        if not ok:
             log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
             with _stats_lock:
                 stats["fail"] += 1
                 stats["errors"].append((task, err))
-            print_stats(stats)  # 失败时也打印统计
+
+        # 无论成功或失败，都从 CSV 中删除该记录
+        if row_id:
+            try:
+                remove_processed_from_csv(CSV_PATH, row_id)
+            except Exception as e:
+                log(f"ERROR: 调用删除CSV逻辑出错: {e}")
 
         q.task_done()
 
@@ -661,95 +493,40 @@ def sig(signum, _frame):
         os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
 
 def main():
-    global _db_engine, _task_start_time, _completion_times, _last_stats_print_time
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)
 
-    # 初始化数据库连接
-    try:
-        _db_engine = connect_db()
-        log("数据库连接成功")
-    except Exception as e:
-        log(f"WARN: 数据库连接失败，将跳过数据库上传: {e}")
-        _db_engine = None
 
     names = prepare_pool_once()
 
-    # 全局统计（跨批次）
-    total_ok = 0
-    total_fail = 0
-    total_processed = 0
-    batch_num = 0
-
-    # 重置统计数据
-    _completion_times = []
-    _last_stats_print_time = 0.0
-    _task_start_time = time.monotonic()  # 记录整体开始时间
-
     try:
-        while True:
-            batch_num += 1
-            # 读取一批任务
-            jobs, header_fields = read_jobs_batch(CSV_PATH, BATCH_SIZE)
-            if not jobs:
-                if batch_num == 1:
-                    log("没有可处理的任务，退出。")
-                else:
-                    log(f"所有批次处理完成，共 {batch_num - 1} 批")
-                break
+        # 读取任务
+        jobs, header_fields = read_jobs(CSV_PATH)
+        if not jobs:
+            log("没有可处理的任务，退出。")
+            return
 
-            log(f"========== 批次 {batch_num}: 读取 {len(jobs)} 条任务 ==========")
+        # 调度执行
+        q: "queue.Queue[Dict[str, str]]" = queue.Queue()
+        for t in jobs:
+            q.put(t)
 
-            # 调度执行
-            q: "queue.Queue[Dict[str, str]]" = queue.Queue()
-            for t in jobs:
-                q.put(t)
+        stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
+        log(f"开始执行：jobs={len(jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            for n in names:
+                pool.submit(worker_loop, n, q, stats, RETRY)
+            q.join()
 
-            # 批次统计
-            stats = {
-                "ok": 0,
-                "fail": 0,
-                "errors": [],
-                "processed_ids": set()  # 需要从 CSV 删除的 row_id
-            }  # type: ignore[dict-item]
-
-            log(f"开始执行：jobs={len(jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
-            with ThreadPoolExecutor(max_workers=len(names)) as pool:
-                for n in names:
-                    pool.submit(worker_loop, n, q, stats, RETRY)
-                q.join()
-
-            # 批次汇总
-            batch_ok = stats["ok"]
-            batch_fail = stats["fail"]
-            batch_processed = len(stats["processed_ids"])
-            total_ok += batch_ok
-            total_fail += batch_fail
-            total_processed += batch_processed
-
-            log(f"[批次{batch_num}汇总] success={batch_ok} fail={batch_fail} processed={batch_processed}")
-            print_stats({"ok": total_ok}, force=True)  # 打印整体统计
-
-            if stats["errors"]:
-                log("本批次失败样例：")
-                for task, err in stats["errors"][:5]:
-                    log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
-
-            # 批量删除已处理的记录
-            if stats["processed_ids"]:
-                try:
-                    remove_batch_from_csv(CSV_PATH, stats["processed_ids"])
-                except Exception as e:
-                    log(f"WARN: 批量删除CSV记录失败: {e}")
-
-            log(f"========== 批次 {batch_num} 完成 ==========\n")
+        # 汇总
+        log(f"[summary] success={stats['ok']} fail={stats['fail']} total={len(jobs)}")
+        if stats["errors"]:
+            log("失败样例：")
+            for task, err in stats["errors"][:10]:
+                log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
 
     except Exception as e:
         log(f"WARN: 执行异常：{e}")
-
-    # 最终汇总
-    log(f"[最终汇总] 共处理 {batch_num} 批次, success={total_ok} fail={total_fail} processed={total_processed}")
-    print_stats({"ok": total_ok}, force=True)
 
     # 等待并清理容器
     time.sleep(60)
