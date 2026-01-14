@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
 from sqlalchemy import create_engine, text
+from tqdm import tqdm
 
 # ============== 配置 ==============
 CONTAINER_PREFIX = "news_traffic"
@@ -63,6 +64,12 @@ _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
 _stats_lock = threading.Lock()
 _db_engine = None  # 全局数据库引擎
+
+# 全局统计变量
+_global_start_time = 0.0
+_global_ok = 0
+_global_fail = 0
+_pbar: Optional[tqdm] = None  # 全局进度条
 
 def connect_db():
     """连接数据库并返回引擎"""
@@ -472,6 +479,7 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
                     log(f"{container} -> done  [{row_id}] {url}")
                     with _stats_lock:
                         stats["ok"] += 1
+                    _update_progress(ok=True)
                     break  # 成功，跳出重试循环
                 else:
                     log(f"{container} -> fail  [{row_id}] {err[:200]}")
@@ -508,8 +516,33 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
             with _stats_lock:
                 stats["fail"] += 1
                 stats["errors"].append((task, err))
+            _update_progress(ok=False)
 
         q.task_done()
+
+def _update_progress(ok: bool) -> None:
+    """更新全局进度条"""
+    global _global_ok, _global_fail
+    with _stats_lock:
+        if ok:
+            _global_ok += 1
+        else:
+            _global_fail += 1
+        
+        total_done = _global_ok + _global_fail
+        elapsed = time.time() - _global_start_time
+        elapsed_min = elapsed / 60.0
+        
+        # 计算统计数据
+        per_min = total_done / elapsed_min if elapsed_min > 0 else 0
+        avg_time = elapsed / total_done if total_done > 0 else 0
+        
+        if _pbar is not None:
+            _pbar.set_postfix_str(
+                f"运行: {elapsed_min:.1f}分钟 | 成功: {_global_ok} | 失败: {_global_fail} | "
+                f"每分钟: {per_min:.2f} | 平均耗时: {avg_time:.1f}秒"
+            )
+            _pbar.update(1)
 
 def prepare_pool_once() -> List[str]:
     ensure_docker_available()
@@ -552,7 +585,7 @@ def sig(signum, _frame):
         os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
 
 def main():
-    global _db_engine
+    global _db_engine, _global_start_time, _global_ok, _global_fail, _pbar
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)
 
@@ -568,6 +601,15 @@ def main():
     total_ok = 0
     total_fail = 0
     batch_num = 0
+    
+    # 初始化全局统计
+    _global_start_time = time.time()
+    _global_ok = 0
+    _global_fail = 0
+    
+    # 创建常驻进度条（total=None 表示未知总数）
+    _pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
+                 bar_format='{desc}: {n_fmt}{unit} [{postfix}]')
 
     try:
         while True:
@@ -615,16 +657,25 @@ def main():
 
     except Exception as e:
         log(f"WARN: 执行异常：{e}")
-
+    finally:
+        # 关闭进度条
+        if _pbar is not None:
+            _pbar.close()
+    
     # 最终汇总
-    log(f"[最终汇总] 共处理 {batch_num} 批次，成功={total_ok}，失败={total_fail}")
+    elapsed = time.time() - _global_start_time
+    elapsed_min = elapsed / 60.0
+    total_done = _global_ok + _global_fail
+    per_min = total_done / elapsed_min if elapsed_min > 0 else 0
+    avg_time = elapsed / total_done if total_done > 0 else 0
+    log(f"[最终汇总] 批次={batch_num} | 运行时间={elapsed_min:.1f}分钟 | 总数={total_done} | 成功={_global_ok} | 失败={_global_fail} | 每分钟={per_min:.2f} | 平均耗时={avg_time:.1f}秒")
 
     # 等待并清理容器
-    time.sleep(60)
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
+    # time.sleep(60)
 
 
 if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
     main()
+    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
