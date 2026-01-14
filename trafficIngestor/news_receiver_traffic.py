@@ -34,10 +34,9 @@ import threading
 from sqlalchemy import create_engine, text
 
 # ============== 配置 ==============
-CSV_PATH =  "/home/pcz/code/news_receiver/db/missing_pcap.csv"
 CONTAINER_PREFIX = "news_traffic"
 START_IDX = 0
-END_IDX = 29 * 12 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 21 * 12 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -51,11 +50,18 @@ NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
 DB_CONFIG_PATH = "/home/pcz/code/news_receiver/db/db_config.ini"
+BATCH_SIZE = 10000  # 每次从数据库获取的任务数量
+# 需要处理的表及其对应的 domain
+TABLES_CONFIG = [
+    {"table": "dailymail_content", "domain": "dailymail.co.uk"},
+    # {"table": "bbc_content", "domain": "bbc.com"},
+    # {"table": "nih_content", "domain": "nih.gov"},
+    # {"table": "forbeschina_content", "domain": "forbeschina.com"},
+]
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()
 _stats_lock = threading.Lock()
-_csv_lock = threading.Lock()  # 用于保护 CSV 文件的并发写入
 _db_engine = None  # 全局数据库引擎
 
 def connect_db():
@@ -100,6 +106,39 @@ def get_table_name(domain: str) -> str:
     }
     return table_map.get(domain, "")
 
+def fetch_jobs_from_db(engine, table: str, domain: str, limit: int = BATCH_SIZE) -> List[Dict[str, str]]:
+    """
+    从数据库获取需要处理的任务（pcap_path 为空的记录）
+    :param engine: 数据库引擎
+    :param table: 表名
+    :param domain: 域名
+    :param limit: 每次获取的数量
+    :return: 任务列表
+    """
+    sql = f"""
+        SELECT id, url
+        FROM {table}
+        WHERE (pcap_path IS NULL OR pcap_path = '')
+        AND url IS NOT NULL AND url <> ''
+        ORDER BY id
+        LIMIT {limit}
+    """
+    
+    jobs: List[Dict[str, str]] = []
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text(sql))
+            for row in result:
+                row_id = str(row[0])
+                url = row[1]
+                if table == "wikicontent":
+                    url = "https://zh.wikipedia.org/wiki/" + url
+                jobs.append({"row_id": row_id, "url": url, "domain": domain})
+    except Exception as e:
+        log(f"WARN: 从数据库获取任务失败: {e}")
+    
+    return jobs
+
 def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
                                 ssl_key_path: str, content_path: str, html_path: str) -> bool:
     """上传单条记录到数据库"""
@@ -135,49 +174,34 @@ def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
     finally:
         conn.close()
 
-def remove_processed_from_csv(csv_path: str, row_id: str) -> None:
-    """从 CSV 中删除已处理成功的记录（原子写入，防止中断丢失数据）"""
-    import tempfile
-    with _csv_lock:
-        p = Path(csv_path)
-        if not p.exists():
-            return
+def mark_failed_record_to_db(engine, domain: str, row_id: int) -> bool:
+    """标记失败记录到数据库，只更新 pcap_path='error'"""
+    table = get_table_name(domain)
+    if not table:
+        log(f"WARN: 不支持的 domain: {domain}，跳过数据库标记")
+        return False
 
-        # 读取所有行
-        with p.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            if reader.fieldnames is None:
-                return
-            header_fields = list(reader.fieldnames)
-            rows = list(reader)
+    sql = f"""
+        UPDATE {table}
+        SET pcap_path=%s
+        WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
+    """.strip()
 
-        # 过滤掉已处理的记录
-        def get_id(row: Dict[str, str]) -> str:
-            for k, v in row.items():
-                if k.lower() == "id":
-                    return (v or "").strip()
-            return ""
+    data = ('error', row_id)
 
-        remaining_rows = [r for r in rows if get_id(r) != row_id]
+    conn = engine.raw_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, data)
+            affected = cur.rowcount
+        conn.commit()
+        return affected > 0
+    except Exception as e:
+        log(f"WARN: 数据库标记失败 row_id={row_id}: {e}")
+        return False
+    finally:
+        conn.close()
 
-        # 原子写入：先写临时文件，再重命名
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=p.parent, suffix=".tmp", prefix=".csv_"
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8-sig", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=header_fields)
-                writer.writeheader()
-                writer.writerows(remaining_rows)
-            os.replace(tmp_path, csv_path)  # 原子操作
-            log(f"已从 CSV 删除记录 row_id={row_id}，剩余 {len(remaining_rows)} 条")
-        except Exception:
-            # 失败时删除临时文件
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
@@ -316,47 +340,7 @@ def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str
     return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
 
 
-def read_jobs(csv_path: str) -> Tuple[List[Dict[str, str]], List[str]]:
-    p = Path(csv_path)
-    if not p.exists():
-        return [], ["id", "url", "domain"]
 
-    with p.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
-            return [], ["id", "url", "domain"]
-
-        header_fields = [h.strip() for h in reader.fieldnames]
-
-        def get_case_insensitive(row: Dict[str, str], key: str) -> str:
-            for k, v in row.items():
-                if k.lower() == key:
-                    return (v or "").strip()
-            return ""
-
-        jobs: List[Dict[str, str]] = []
-        for r in reader:
-            rid = get_case_insensitive(r, "id")
-            url = get_case_insensitive(r, "url")
-            dom = get_case_insensitive(r, "domain")
-            if not url:
-                continue
-            jobs.append({"row_id": rid, "url": url, "domain": dom})
-
-    return jobs, header_fields
-
-
-def reset_csv_with_header(csv_path: str, header_fields: List[str]) -> None:
-    base = ["id", "url", "domain"]
-    wanted = [h for h in header_fields if h] or base
-    low = [h.lower() for h in wanted]
-    for must in base:
-        if must not in low:
-            wanted.append(must)
-    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(wanted)
-    log(f"CSV 已清空并写回表头: {csv_path} -> {wanted}")
 
 def chown_recursive(path: str, uid: int = 1002, gid: int = 1002) -> None:
     """把 path（文件或目录）及其子项（若为目录）设为 uid:gid。尽量不抛异常。"""
@@ -450,8 +434,6 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
                     )
                     if db_ok:
                         log(f"数据库更新成功 row_id={row_id_int}")
-                        # 从 CSV 删除已处理记录
-                        remove_processed_from_csv(CSV_PATH, task.get("row_id", ""))
                     else:
                         log(f"数据库更新失败或无匹配行 row_id={row_id_int}")
             except Exception as e:
@@ -511,6 +493,18 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
         # 所有重试都失败
         if not ok:
             log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
+            # 失败时也写数据库，标记 pcap_path='error'
+            try:
+                row_id_int = int(task.get("row_id", "0"))
+                domain = task.get("domain", "")
+                if _db_engine and domain:
+                    db_ok = mark_failed_record_to_db(_db_engine, domain, row_id_int)
+                    if db_ok:
+                        log(f"失败记录已标记到数据库 row_id={row_id_int}")
+                    else:
+                        log(f"数据库标记失败或无匹配行 row_id={row_id_int}")
+            except Exception as e:
+                log(f"WARN: 数据库标记异常 row_id={task.get('row_id','')}: {e}")
             with _stats_lock:
                 stats["fail"] += 1
                 stats["errors"].append((task, err))
@@ -567,39 +561,63 @@ def main():
         _db_engine = connect_db()
         log("数据库连接成功")
     except Exception as e:
-        log(f"WARN: 数据库连接失败，将跳过数据库上传: {e}")
-        _db_engine = None
+        log(f"FATAL: 数据库连接失败，无法继续: {e}")
+        return
 
     names = prepare_pool_once()
+    total_ok = 0
+    total_fail = 0
+    batch_num = 0
 
     try:
-        # 读取任务
-        jobs, header_fields = read_jobs(CSV_PATH)
-        if not jobs:
-            log("没有可处理的任务，退出。")
-            return
+        while True:
+            # 从所有表中获取任务
+            all_jobs: List[Dict[str, str]] = []
+            for table_config in TABLES_CONFIG:
+                table = table_config["table"]
+                domain = table_config["domain"]
+                jobs = fetch_jobs_from_db(_db_engine, table, domain, BATCH_SIZE)
+                if jobs:
+                    log(f"从 {table} 获取了 {len(jobs)} 条任务")
+                    all_jobs.extend(jobs)
+            
+            if not all_jobs:
+                log("所有表都没有需要处理的任务，退出。")
+                break
+            
+            batch_num += 1
+            log(f"===== 批次 {batch_num}: 共 {len(all_jobs)} 条任务 =====")
 
-        # 调度执行
-        q: "queue.Queue[Dict[str, str]]" = queue.Queue()
-        for t in jobs:
-            q.put(t)
+            # 调度执行
+            q: "queue.Queue[Dict[str, str]]" = queue.Queue()
+            for t in all_jobs:
+                q.put(t)
 
-        stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
-        log(f"开始执行：jobs={len(jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
-        with ThreadPoolExecutor(max_workers=len(names)) as pool:
-            for n in names:
-                pool.submit(worker_loop, n, q, stats, RETRY)
-            q.join()
+            stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
+            log(f"开始执行：jobs={len(all_jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
+            with ThreadPoolExecutor(max_workers=len(names)) as pool:
+                for n in names:
+                    pool.submit(worker_loop, n, q, stats, RETRY)
+                q.join()
 
-        # 汇总
-        log(f"[summary] success={stats['ok']} fail={stats['fail']} total={len(jobs)}")
-        if stats["errors"]:
-            log("失败样例：")
-            for task, err in stats["errors"][:10]:
-                log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
+            # 汇总本批次
+            total_ok += stats['ok']
+            total_fail += stats['fail']
+            log(f"[批次 {batch_num} 汇总] success={stats['ok']} fail={stats['fail']} batch_total={len(all_jobs)}")
+            if stats["errors"]:
+                log("失败样例：")
+                for task, err in stats["errors"][:10]:
+                    log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
+            
+            # 清理 HOST_CODE_PATH 下的子目录，为下一批做准备
+            clear_host_code_subdirs()
+            log(f"已清理 HOST_CODE_PATH 子目录，准备下一批次...")
 
     except Exception as e:
         log(f"WARN: 执行异常：{e}")
+
+    # 最终汇总
+    log(f"[最终汇总] 共处理 {batch_num} 批次，成功={total_ok}，失败={total_fail}")
 
     # 等待并清理容器
     time.sleep(60)
