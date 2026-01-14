@@ -69,6 +69,7 @@ _db_engine = None  # 全局数据库引擎
 _global_start_time = 0.0
 _global_ok = 0
 _global_fail = 0
+_global_task_time = 0.0  # 累计所有任务的实际执行时间
 _pbar: Optional[tqdm] = None  # 全局进度条
 
 def connect_db():
@@ -249,7 +250,11 @@ def _wait_before_exec():
             time.sleep(min(delta, 0.5))
 def log(*a):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}]", *a, flush=True)
+    msg = f"[{ts}] " + " ".join(str(x) for x in a)
+    if _pbar is not None:
+        tqdm.write(msg)
+    else:
+        print(msg, flush=True)
 
 def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
@@ -467,6 +472,7 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
 
         ok = False
         err = ""
+        task_start_time = time.time()  # 记录任务开始时间
         for attempt in range(retry + 1):  # 首次 + retry 次重试
             try:
                 if attempt == 0:
@@ -476,10 +482,11 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
 
                 ok, err = exec_once(task)
                 if ok:
-                    log(f"{container} -> done  [{row_id}] {url}")
+                    task_elapsed = time.time() - task_start_time
+                    log(f"{container} -> done  [{row_id}] {url} ({task_elapsed:.1f}s)")
                     with _stats_lock:
                         stats["ok"] += 1
-                    _update_progress(ok=True)
+                    _update_progress(ok=True, task_elapsed=task_elapsed)
                     break  # 成功，跳出重试循环
                 else:
                     log(f"{container} -> fail  [{row_id}] {err[:200]}")
@@ -516,18 +523,20 @@ def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, r
             with _stats_lock:
                 stats["fail"] += 1
                 stats["errors"].append((task, err))
-            _update_progress(ok=False)
+            task_elapsed = time.time() - task_start_time
+            _update_progress(ok=False, task_elapsed=task_elapsed)
 
         q.task_done()
 
-def _update_progress(ok: bool) -> None:
+def _update_progress(ok: bool, task_elapsed: float = 0.0) -> None:
     """更新全局进度条"""
-    global _global_ok, _global_fail
+    global _global_ok, _global_fail, _global_task_time
     with _stats_lock:
         if ok:
             _global_ok += 1
         else:
             _global_fail += 1
+        _global_task_time += task_elapsed  # 累计实际任务执行时间
         
         total_done = _global_ok + _global_fail
         elapsed = time.time() - _global_start_time
@@ -535,7 +544,7 @@ def _update_progress(ok: bool) -> None:
         
         # 计算统计数据
         per_min = total_done / elapsed_min if elapsed_min > 0 else 0
-        avg_time = elapsed / total_done if total_done > 0 else 0
+        avg_time = _global_task_time / total_done if total_done > 0 else 0  # 使用累计任务时间
         
         if _pbar is not None:
             _pbar.set_postfix_str(
@@ -585,7 +594,7 @@ def sig(signum, _frame):
         os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
 
 def main():
-    global _db_engine, _global_start_time, _global_ok, _global_fail, _pbar
+    global _db_engine, _global_start_time, _global_ok, _global_fail, _global_task_time, _pbar
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)
 
@@ -606,6 +615,7 @@ def main():
     _global_start_time = time.time()
     _global_ok = 0
     _global_fail = 0
+    _global_task_time = 0.0
     
     # 创建常驻进度条（total=None 表示未知总数）
     _pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
@@ -667,7 +677,7 @@ def main():
     elapsed_min = elapsed / 60.0
     total_done = _global_ok + _global_fail
     per_min = total_done / elapsed_min if elapsed_min > 0 else 0
-    avg_time = elapsed / total_done if total_done > 0 else 0
+    avg_time = _global_task_time / total_done if total_done > 0 else 0  # 使用累计任务时间
     log(f"[最终汇总] 批次={batch_num} | 运行时间={elapsed_min:.1f}分钟 | 总数={total_done} | 成功={_global_ok} | 失败={_global_fail} | 每分钟={per_min:.2f} | 平均耗时={avg_time:.1f}秒")
 
     # 等待并清理容器
