@@ -34,8 +34,14 @@ import threading
 from sqlalchemy import create_engine, text
 from tqdm import tqdm
 
+
+def get_real_username() -> str:
+    """获取真实用户名，即使在 sudo 下也能获取原始用户"""
+    return os.environ.get('SUDO_USER') or os.environ.get('USER') or os.getlogin()
+
+
 # ============== 配置 ==============
-CONTAINER_PREFIX = "news_traffic"
+CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
 START_IDX = 0
 END_IDX = 21 * 12 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
@@ -381,13 +387,13 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
         "python", "-u", f"{CONTAINER_CODE_PATH}/action.py",
         payload
     ]
-    print("执行命令", cmd)
+    log("执行命令", cmd)
     cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
     if cp.returncode == 0:
         try:
             with open(HOST_CODE_PATH + f"/meta/{container}_last.json", "r", encoding="utf-8") as f:
                 result = json.load(f)
-            print('result', result)
+            log('result', result)
             pcap_path = result.get("pcap_path")
             ssl_key_file_path = result.get("ssl_key_file_path")
             content_path = result.get("content_path")
@@ -402,7 +408,7 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             content_path = content_path.replace("/app", HOST_CODE_PATH)
             html_path = html_path.replace("/app", HOST_CODE_PATH)
             screenshot_path = screenshot_path.replace("/app", HOST_CODE_PATH)
-            print('screenshot_path', screenshot_path)
+            log('screenshot_path', screenshot_path)
             dst = os.path.join(DASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
             if not os.path.exists(pcap_dst):
@@ -566,19 +572,26 @@ def prepare_pool_once() -> List[str]:
     log(f"容器池规模={len(names)}: {names[0]} … {names[-1]}")
 
     created: List[str] = []
+    created_lock = threading.Lock()
 
-    # Pass 1：缺就建（记录本轮新建的容器名）
-    for n in names:
-        exists = container_exists(n)
+    def check_and_create(name: str) -> None:
+        """检查容器是否存在，不存在则创建"""
+        exists = container_exists(name)
         if exists is None:
-            create_container(n, str(host_code), DOCKER_IMAGE)
-            created.append(n)
+            create_container(name, str(host_code), DOCKER_IMAGE)
+            with created_lock:
+                created.append(name)
+
+    # Pass 1：缺就建（并发执行，记录本轮新建的容器名）
+    with ThreadPoolExecutor(max_workers=min(len(names), 20)) as pool:
+        pool.map(check_and_create, names)
 
     # Pass 2：不在运行的统一 start（包含老容器；新建容器通常已在运行，冪等调用无害）
     for n in names:
         if not container_running(n):
             start_container(n)
 
+    time.sleep(5)
     # Pass 3：所有 docker run 完成后，按顺序对“本次新建”的容器执行一次 offload 关闭
     for n in created:
         disable_offload_once(n)
