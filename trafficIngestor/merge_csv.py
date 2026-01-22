@@ -9,14 +9,22 @@ merge_csv.py
 """
 
 import csv
+import os
+import sys
 from pathlib import Path
 from typing import Set, List, Dict
 from datetime import datetime
 import shutil
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # ============== 配置 ==============
-ALL_CSV_PATH = '/home/pcz/code/news_receiver/trafficIngestor/collected_request_urls_all.csv'
-TEMP_CSV_PATH = '/home/pcz/code/news_receiver/trafficIngestor/collected_request_urls_temp.csv'
+ALL_CSV_PATH = os.path.join(_current_dir, 'collected_request_urls_all.csv')  # 使用相对路径
+TEMP_CSV_PATH = os.path.join(_current_dir, 'collected_request_urls_temp.csv')  # 使用相对路径
 # =================================
 
 

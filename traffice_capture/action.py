@@ -1,200 +1,57 @@
-import json
-import shutil
+"""
+traffice_capture/action.py - BBC新闻流量捕获
+继承BaseAction，添加BBC特定的404检测逻辑
+"""
 import sys
 import os
-import subprocess
-import time
-import threading
-from datetime import datetime
-from capture import capture, stop_capture
-from logger import logger
-from chrome import create_chrome_driver, open_url_and_save_content
-current_index = 0
-allowed_domain = ""
-pcap_lowest_size = 100000
-ssl_key_lowest_size = 1000
 
-def _start_reaper():
-    import threading, os, time
-    def _loop():
-        while True:
-            try:
-                while True:
-                    pid, _ = os.waitpid(-1, os.WNOHANG)
-                    if pid == 0:
-                        break
-            except ChildProcessError:
-                pass
-            time.sleep(1)
-    threading.Thread(target=_loop, daemon=True).start()
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
-_start_reaper()
-
-# 清除浏览器进程
-def kill_chrome_processes():
-    try:
-        # Run the command to kill all processes containing 'chrome'
-        subprocess.run(['pkill', '-f', 'chromedriver'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        subprocess.run(['pkill', '-f', 'google-chrome'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e.stderr.decode('utf-8')}")
+from tools.base_action import BaseAction
 
 
-# 流量捕获进程
-def traffic(index=0, formatted_time=None):
-    # 获取当前时间
-    current_time = datetime.now()
-    # 格式化输出
-    capture(allowed_domain, formatted_time, f"{index}")
+class BBCAction(BaseAction):
+    """BBC新闻流量捕获Action"""
 
-# 清理流量捕获进程
-def kill_tcpdump_processes():
-    try:
-        # Run the command to kill all processes containing 'chrome'
-        # logger.info(f"清理流量捕获进程")
-        subprocess.run(['sudo', 'pkill', '-f', 'tcpdump'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e.stderr.decode('utf-8')}")
+    # BBC的阈值设置
+    pcap_lowest_size = 100000
+    ssl_key_lowest_size = 1000
 
+    def check_page_not_found(self, html_path, domain):
+        """
+        检查BBC页面是否为404
+        """
+        if "bbc" not in domain:
+            return False
 
-def start_task():
-    global current_index
-    current_index += 1
-    global allowed_domain
-    payload = json.loads(sys.argv[1])
-    container = payload["container"]
-    row_id = payload["row_id"]
-    url = payload["url"]
-    allowed_domain = payload["domain"]
+        if not html_path or not os.path.exists(html_path):
+            return False
 
-    # 清理旧文件
-    meta_path = f"/app/meta/{container}_last.json"
-    if os.path.exists(meta_path):
-        size = os.path.getsize(meta_path)
-        if size != 0:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                old_result = json.load(f)
-                pcap_path = old_result.get("pcap_path")
-                ssl_key_file_path = old_result.get("ssl_key_file_path")
-                content_path = old_result.get("content_path")
-                html_path = old_result.get("html_path")
-                screenshot_path = old_result.get("screenshot_path")
-                # 删除文件
-                try:
-                    if pcap_path and os.path.exists(pcap_path):
-                        os.remove(pcap_path)
-                    if ssl_key_file_path and os.path.exists(ssl_key_file_path):
-                        os.remove(ssl_key_file_path)
-                    if content_path and os.path.exists(content_path):
-                        os.remove(content_path)
-                    if html_path and os.path.exists(html_path):
-                        os.remove(html_path)
-                    if screenshot_path and os.path.exists(screenshot_path):
-                        os.remove(screenshot_path)
-                except Exception as e:
-                    logger.error(f"删除旧文件失败: {e}")
-
-    formatted_time = datetime.now().strftime("%Y%m%d_%H_%M_%S")
-    kill_chrome_processes()
-    kill_tcpdump_processes()
-    time.sleep(1)
-
-    # 初始化变量，防止异常时未定义
-    content_path = ""
-    html_path = ""
-    screenshot_path = ""
-    pcap_path = ""
-
-    # 开流量收集
-    traffic_thread = threading.Thread(target=traffic, kwargs={"index": row_id, "formatted_time":formatted_time} )
-    traffic_thread.start()
-    time.sleep(1)
-    logger.info(f"创建浏览器")
-    browser, ssl_key_file_path = create_chrome_driver(allowed_domain, formatted_time, f"{row_id}")
-    logger.info(f"开始访问第{row_id}的词条：{url}")
-    try:
-        content_path, html_path, screenshot_path = open_url_and_save_content(browser, url, ssl_key_file_path)
-    except Exception as e:
-        logger.error(f"open_url_and_save_content 异常: {e}")
-
-    try:
-        browser.quit()  # 彻底退出，会回收 chromedriver 与子进程
-    except Exception as e:
-        logger.warning(f"browser.quit() 异常: {e}")
-    logger.info("清理浏览器进程(兜底)")
-    kill_chrome_processes()
-
-    logger.info(f"等待TCP结束挥手完成，耗时60秒")
-    time.sleep(60)
-
-    # 关流量收集
-    logger.info(f"关流量收集")
-    pcap_path = stop_capture()
-    pcap_file_size = os.path.getsize(pcap_path)
-    ssl_key_file_size = os.path.getsize(ssl_key_file_path)
-    logger.info(f"pcap文件大小：{pcap_file_size}，ssl_key文件大小：{ssl_key_file_size}")
-    need_restart = False
-    page_not_found = False
-
-    # 检查HTML是否包含页面未找到的错误信息（仅限BBC）
-    if "bbc" in allowed_domain and os.path.exists(html_path):
         try:
             with open(html_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
-                if "Sorry, we couldn’t find that page" in html_content or "Page cannot be found" in html_content or "Check the page address or search for it below" in html_content or "Sorry, we're unable to bring you the page you're looking for" in html_content:
-                    logger.warning("页面未找到：HTML包含404错误信息")
-                    page_not_found = True
+
+            error_messages = [
+                "Sorry, we couldn't find that page",
+                "Page cannot be found",
+                "Check the page address or search for it below",
+                "Sorry, we're unable to bring you the page you're looking for"
+            ]
+
+            for msg in error_messages:
+                if msg in html_content:
+                    self.logger.warning("页面未找到：HTML包含404错误信息")
+                    return True
+
         except Exception as e:
-            logger.error(f"读取HTML文件失败: {e}")
+            self.logger.error(f"读取HTML文件失败: {e}")
 
-    if page_not_found:
-        # 页面未找到，校验不通过但不重试
-        logger.warning("页面不存在，跳过重试")
-    elif pcap_file_size > pcap_lowest_size and ssl_key_file_size > ssl_key_lowest_size and os.path.exists(content_path) and os.path.exists(html_path):
-        logger.info("数据文件校验通过")
-    else:
-        need_restart = True
+        return False
 
-    # 校验不通过时删除文件（page_not_found 或 need_restart）
-    if page_not_found or need_restart:
-        try:
-            if os.path.exists(pcap_path):
-                os.remove(pcap_path)
-            if os.path.exists(ssl_key_file_path):
-                os.remove(ssl_key_file_path)
-            if os.path.exists(content_path):
-                os.remove(content_path)
-            if os.path.exists(html_path):
-                os.remove(html_path)
-            if os.path.exists(screenshot_path):
-                os.remove(screenshot_path)
-        except Exception as e:
-            logger.error(f"删除不合格文件失败: {e}")
-
-    if need_restart and current_index < 4:
-        logger.info(f"pcap_lowest_size:{pcap_lowest_size} > pcap_file_size:{pcap_file_size}")
-        logger.info(f"ssl_key_lowest_size:{ssl_key_lowest_size} > ssl_key_file_size:{ssl_key_file_size}")
-        logger.info("流量文件大小未通过校验，准备重试")
-        time.sleep(5)
-        start_task()
-    else:
-        # 只有校验通过时才写入有效路径，否则写入空字符串
-        if need_restart or page_not_found:
-            # 重试次数用尽或页面不存在，写入空路径表示失败
-            result = {"pcap_path": "", "ssl_key_file_path": "", "content_path": "",
-                "html_path": "", "row_id": row_id, "screenshot_path": ""}
-            if page_not_found:
-                logger.warning(f"页面不存在，任务失败: row_id={row_id}")
-            else:
-                logger.warning(f"重试次数用尽，任务失败: row_id={row_id}")
-        else:
-            result = {"pcap_path": pcap_path or "", "ssl_key_file_path": ssl_key_file_path or "", "content_path": content_path or "",
-                "html_path": html_path or "", "row_id": row_id, "screenshot_path": screenshot_path or ""}
-        if not os.path.exists(os.path.dirname(meta_path)):
-            os.makedirs(os.path.dirname(meta_path))
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)  # 中文不转义，缩进美化
-    time.sleep(1)
 
 if __name__ == "__main__":
-    start_task()
+    BBCAction.run_from_argv()

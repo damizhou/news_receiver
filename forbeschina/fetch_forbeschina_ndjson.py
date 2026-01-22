@@ -2,13 +2,22 @@
 from __future__ import annotations
 import re
 import subprocess
+import sys
+import os
 from typing import List, Dict
 from bs4 import BeautifulSoup
 import json
 from pathlib import Path
 from typing import Iterable, Mapping, Any
-from chrome import create_chrome_driver
 import time
+
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from tools.chrome import create_chrome_driver, kill_chrome_processes
 
 RATE_LIMIT_SLEEP = 600          # 访问过快时，回退等待的时间（秒）= 10 分钟
 MAX_RATE_LIMIT_RETRY = 10        # 同一页最多回退重试次数
@@ -161,15 +170,7 @@ def append_ndjson(items: Iterable[Mapping[str, Any]], out_file: str | Path) -> i
     return n
 
 
-# 清除浏览器进程
-def kill_chrome_processes():
-    try:
-        # Run the command to kill all processes containing 'chrome'
-        subprocess.run(['pkill', '-f', 'chromedriver'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        subprocess.run(['pkill', '-f', 'google-chrome'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(f"Error occurred: {e.stderr.decode('utf-8')}")
-
+# 清除浏览器进程（使用共用模块）
 kill_chrome_processes()
 driver = create_chrome_driver()
 pn = 0

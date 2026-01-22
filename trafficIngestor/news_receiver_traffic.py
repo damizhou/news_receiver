@@ -34,6 +34,12 @@ import threading
 from sqlalchemy import create_engine, text
 from tqdm import tqdm
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 def get_real_username() -> str:
     """获取真实用户名，即使在 sudo 下也能获取原始用户"""
@@ -47,8 +53,8 @@ END_IDX = 21 * 12 - 1                    # 0..78 共 79 个容器（若只需 76
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = '/home/pcz/code/news_receiver/traffice_capture'  # ★ 按你要求固定
-DASE_DST = '/netdisk/news_receiver'
+HOST_CODE_PATH = os.path.join(_project_root, 'traffice_capture')  # 使用相对路径
+DASE_DST = '/netdisk/news_receiver'  # 网络磁盘目标路径（保持绝对路径，因为这是外部存储位置）
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
@@ -56,7 +62,7 @@ RETRY = 5                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
-DB_CONFIG_PATH = "/home/pcz/code/news_receiver/db/db_config.ini"
+DB_CONFIG_PATH = os.path.join(_project_root, 'db', 'db_config.ini')  # 使用相对路径
 BATCH_SIZE = 10000  # 每次从数据库获取的任务数量
 # 需要处理的表及其对应的 domain
 TABLES_CONFIG = [
@@ -701,4 +707,3 @@ if __name__ == "__main__":
     subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
     main()
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)

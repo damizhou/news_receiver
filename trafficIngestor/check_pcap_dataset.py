@@ -14,6 +14,7 @@ check_pcap_dataset.py
 """
 
 import os
+import sys
 import re
 import csv
 from pathlib import Path
@@ -21,9 +22,15 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Set
 import argparse
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # ============== 配置 ==============
-BASE_PATH = '/netdisk/dataset/ablation_study/single'
-CSV_PATH = '/home/pcz/code/news_receiver/trafficIngestor/collected_request_urls_all.csv'
+BASE_PATH = '/netdisk/dataset/ablation_study/single'  # 外部存储路径，保持绝对路径
+CSV_PATH = os.path.join(_current_dir, 'collected_request_urls_all.csv')  # 使用相对路径
 EXPECTED_URL_COUNT = 10        # 每个 domain 期望的 URL 数量
 EXPECTED_COPY_COUNT = 100      # 每个 URL 期望的最小副本数量
 # =================================

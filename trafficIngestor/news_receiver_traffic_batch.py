@@ -25,16 +25,22 @@ from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # ============== 配置 ==============
-CODE_BASE_PATH = '/home/pcz/code/news_receiver'
+CODE_BASE_PATH = _project_root  # 使用相对路径
 CSV_PATH = "collected_request_urls_all.csv"
 CONTAINER_PREFIX = "batch_traffic_batch"
 START_IDX = 0
 END_IDX = 19 * 5 - 1                       # 0..2 共 3 个容器
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = CODE_BASE_PATH + "/batch_traffice_capture"
-DASE_DST = '/netdisk/dataset/ablation_study/batch'
+HOST_CODE_PATH = os.path.join(_project_root, 'batch_traffice_capture')  # 使用相对路径
+DASE_DST = '/netdisk/dataset/ablation_study/batch'  # 外部存储路径，保持绝对路径
 # =================================
 CREATE_WITH_TTY = True
 DOCKER_EXEC_TIMEOUT = 6000

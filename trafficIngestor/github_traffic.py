@@ -33,16 +33,22 @@ import shutil
 import threading
 from sqlalchemy import create_engine, text
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # ============== 配置 ==============
-CSV_PATH =  "/home/pcz/code/news_receiver/db/github_repos_1000.csv"
+CSV_PATH = os.path.join(_project_root, 'db', 'github_repos_1000.csv')  # 使用相对路径
 CONTAINER_PREFIX = "github_traffic"
 START_IDX = 0
 END_IDX = 28                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = '/home/pcz/code/news_receiver/traffice_capture_github'  # ★ 按你要求固定
-DASE_DST = '/netdisk/github_with_ssl_key/lyl'
+HOST_CODE_PATH = os.path.join(_project_root, 'traffice_capture_github')  # 使用相对路径
+DASE_DST = '/netdisk/github_with_ssl_key/lyl'  # 外部存储路径，保持绝对路径
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
@@ -50,7 +56,7 @@ RETRY = 5                         # 失败重试次数（不含首次）
 NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
 # =================================
 EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
-DB_CONFIG_PATH = "/home/pcz/code/news_receiver/db/db_config.ini"
+DB_CONFIG_PATH = os.path.join(_project_root, 'db', 'db_config.ini')  # 使用相对路径
 
 _last_exec_ts = 0.0
 _last_exec_lock = threading.Lock()

@@ -31,21 +31,27 @@ from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
 
+# 添加项目根目录到路径
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 def get_real_username() -> str:
     """获取真实用户名，即使在 sudo 下也能获取原始用户"""
     return os.environ.get('SUDO_USER') or os.environ.get('USER') or os.getlogin()
 
 # ============== 配置 ==============
-CODE_BASE_PATH = '/home/pcz/code/news_receiver'
-CSV_PATH =  "/home/pcz/code/news_receiver/trafficIngestor/urls_combined.csv"
+CODE_BASE_PATH = _project_root  # 使用相对路径
+CSV_PATH = os.path.join(_current_dir, 'urls_combined.csv')  # 使用相对路径
 CONTAINER_PREFIX = f"{get_real_username()}_traffic_receiver"
 START_IDX = 0
 END_IDX = 2                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = CODE_BASE_PATH + "/single_traffice_capture"  # ★ 按你要求固定
-DASE_DST = '/netdisk/traffic_receiver'
+HOST_CODE_PATH = os.path.join(_project_root, 'single_traffice_capture')  # 使用相对路径
+DASE_DST = '/netdisk/traffic_receiver'  # 外部存储路径，保持绝对路径
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
