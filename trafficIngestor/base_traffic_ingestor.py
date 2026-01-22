@@ -85,7 +85,7 @@ class BaseTrafficIngestor(ABC):
         print(msg, flush=True)
 
     # ============== 命令执行 ==============
-    def run(self, cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+    def run_cmd(self, cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
         """执行命令并返回结果"""
         return subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -96,14 +96,14 @@ class BaseTrafficIngestor(ABC):
     def ensure_docker_available(self) -> None:
         """确保 Docker 可用"""
         try:
-            self.run(["docker", "version"]).check_returncode()
+            self.run_cmd(["docker", "version"]).check_returncode()
         except Exception as e:
             self.log("FATAL: docker 不可用。", e)
             sys.exit(2)
 
     def container_exists(self, name: str) -> Optional[bool]:
         """检查容器是否存在，返回 None 表示不存在"""
-        cp = self.run(["docker", "inspect", "-f", "{{.State.Running}}", name])
+        cp = self.run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", name])
         if cp.returncode != 0:
             return None
         out = cp.stdout.strip().lower()
@@ -111,7 +111,7 @@ class BaseTrafficIngestor(ABC):
 
     def container_running(self, name: str) -> bool:
         """检查容器是否正在运行"""
-        cp = self.run(["docker", "inspect", "-f", "{{.State.Running}}", name])
+        cp = self.run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", name])
         return (cp.returncode == 0) and (cp.stdout.strip().lower() == "true")
 
     def create_container(self, name: str, host_code_path: str, image: str) -> None:
@@ -132,7 +132,7 @@ class BaseTrafficIngestor(ABC):
         else:
             cmd += ["-d"]
         cmd += ["--name", name, image, "/bin/bash"]
-        cp = self.run(cmd)
+        cp = self.run_cmd(cmd)
         if cp.returncode != 0:
             self.log(f"FATAL: 创建容器失败: {name} -> {cp.stderr.strip()}")
             sys.exit(2)
@@ -140,7 +140,7 @@ class BaseTrafficIngestor(ABC):
 
     def start_container(self, name: str) -> None:
         """启动容器"""
-        cp = self.run(["docker", "start", name])
+        cp = self.run_cmd(["docker", "start", name])
         if cp.returncode != 0:
             self.log(f"FATAL: 启动容器失败: {name} -> {cp.stderr.strip()}")
             sys.exit(2)
@@ -163,7 +163,7 @@ class BaseTrafficIngestor(ABC):
             fi
             exit $rc
         '''
-        cp = self.run(["docker", "exec", name, "sh", "-lc", shell])
+        cp = self.run_cmd(["docker", "exec", name, "sh", "-lc", shell])
         if cp.returncode == 0:
             self.log(f"{name}: offload disabled (TSO/GSO/GRO off)")
         else:
@@ -371,7 +371,7 @@ class BaseTrafficIngestor(ABC):
             payload
         ]
         self.log("执行命令", cmd)
-        cp = self.run(cmd, timeout=self.DOCKER_EXEC_TIMEOUT)
+        cp = self.run_cmd(cmd, timeout=self.DOCKER_EXEC_TIMEOUT)
 
         if cp.returncode == 0:
             try:

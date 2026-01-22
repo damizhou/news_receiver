@@ -27,7 +27,7 @@ class XTrafficIngestor(BaseTrafficIngestor):
     START_IDX = 0
     END_IDX = 21 * 12 - 1
     HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_x')
-    BASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260122'
+    BASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260123'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
     RETRY = 5
 
