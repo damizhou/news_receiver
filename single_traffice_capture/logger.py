@@ -14,7 +14,9 @@ def setup_logging():
     # 格式化输出
     formatted_time = current_time.strftime("%Y%m%d")
 
-    filename = formatted_time + ".log"
+    # 获取容器名称，用于区分不同容器的日志
+    container_name = os.getenv('CONTAINER_NAME', 'unknown')
+    filename = f"{formatted_time}_{container_name}.log"
 
     # 创建一个logger
     logger = logging.getLogger(filename.split(".")[0])

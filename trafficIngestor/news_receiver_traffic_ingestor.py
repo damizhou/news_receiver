@@ -31,17 +31,21 @@ from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
 
+def get_real_username() -> str:
+    """获取真实用户名，即使在 sudo 下也能获取原始用户"""
+    return os.environ.get('SUDO_USER') or os.environ.get('USER') or os.getlogin()
+
 # ============== 配置 ==============
 CODE_BASE_PATH = '/home/pcz/code/news_receiver'
-CSV_PATH =  "collected_request_urls_update.csv"
-CONTAINER_PREFIX = "single_traffic_ingestor"
+CSV_PATH =  "/home/pcz/code/news_receiver/trafficIngestor/urls_combined.csv"
+CONTAINER_PREFIX = f"{get_real_username()}_traffic_receiver"
 START_IDX = 0
-END_IDX = 19 * 7 - 1                     # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 2                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
 HOST_CODE_PATH = CODE_BASE_PATH + "/single_traffice_capture"  # ★ 按你要求固定
-DASE_DST = '/netdisk/dataset/ablation_study/single'
+DASE_DST = '/netdisk/traffic_receiver'
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
@@ -124,6 +128,7 @@ def create_container(name: str, host_code_path: str, image: str):
         "--volume", f"{host_code_path}:{CONTAINER_CODE_PATH}",
         "-e", f"HOST_UID={uid}",
         "-e", f"HOST_GID={gid}",
+        "-e", f"CONTAINER_NAME={name}",
         "--privileged",
     ]
     if CREATE_WITH_TTY:
@@ -386,20 +391,27 @@ def prepare_pool_once() -> List[str]:
     log(f"容器池规模={len(names)}: {names[0]} … {names[-1]}")
 
     created: List[str] = []
+    created_lock = threading.Lock()
 
-    # Pass 1：缺就建（记录本轮新建的容器名）
-    for n in names:
-        exists = container_exists(n)
+    def check_and_create(name: str) -> None:
+        """检查容器是否存在，不存在则创建"""
+        exists = container_exists(name)
         if exists is None:
-            create_container(n, str(host_code), DOCKER_IMAGE)
-            created.append(n)
+            create_container(name, str(host_code), DOCKER_IMAGE)
+            with created_lock:
+                created.append(name)
+
+    # Pass 1：缺就建（并发执行，记录本轮新建的容器名）
+    with ThreadPoolExecutor(max_workers=min(len(names), 20)) as pool:
+        pool.map(check_and_create, names)
 
     # Pass 2：不在运行的统一 start（包含老容器；新建容器通常已在运行，冪等调用无害）
     for n in names:
         if not container_running(n):
             start_container(n)
 
-    # Pass 3：所有 docker run 完成后，按顺序对“本次新建”的容器执行一次 offload 关闭
+    time.sleep(5)
+    # Pass 3：所有 docker run 完成后，按顺序对"本次新建"的容器执行一次 offload 关闭
     for n in created:
         disable_offload_once(n)
 
@@ -454,10 +466,6 @@ def main():
 
 
 if __name__ == "__main__":
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
+    # subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
     clear_host_code_subdirs()
-    count = 118
-    print(f"开始执行数据采集任务,共计{count}次")
-    for i in range(count):
-        print(f'当前开始执行第{i+1}次')
-        main()
+    main()
