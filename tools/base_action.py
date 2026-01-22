@@ -35,7 +35,7 @@ class BaseAction(ABC):
     def __init__(self):
         self.current_index = 0
         self.allowed_domain = ""
-        self.logger = setup_logging()
+        self.logger = None  # 延迟初始化，等获取到容器名称后再设置
         self._start_reaper()
 
     def _start_reaper(self):
@@ -145,6 +145,10 @@ class BaseAction(ABC):
         row_id = payload["row_id"]
         url = payload["url"]
         self.allowed_domain = payload["domain"]
+
+        # 初始化 logger（使用容器名称区分日志文件）
+        if self.logger is None:
+            self.logger = setup_logging(container_name=container)
 
         # 清理旧文件
         meta_path = os.path.join(_project_root, "meta", f"{container}_last.json")

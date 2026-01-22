@@ -1,15 +1,14 @@
 """
-traffice_capture/action.py - BBC新闻流量捕获
+traffic_capture/action.py - BBC新闻流量捕获
 继承BaseAction，添加BBC特定的404检测逻辑
 """
 import sys
 import os
 
-# 添加项目根目录到路径
+# 添加当前目录到路径（容器内 /app 包含 tools/ 子目录）
 _current_dir = os.path.dirname(os.path.abspath(__file__))
-_project_root = os.path.dirname(_current_dir)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
 
 from tools.base_action import BaseAction
 

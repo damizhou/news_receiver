@@ -47,7 +47,7 @@ DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
 HOST_CODE_PATH = os.path.join(_project_root, 'traffice_capture_x')  # 使用相对路径
-DASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260109'  # 外部存储路径，保持绝对路径
+DASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260122'  # 外部存储路径，保持绝对路径
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-run_news_receiver_pool.py
+news_receiver_traffic.py
 
-- 从 csv 读取记录（id,url,domain）
+- 从数据库读取记录（id,url,domain）
 - 每行转 JSON：{"row_id": id, "url": url, "domain": domain}
-- 使用容器池 news_receiver0..78 并发执行：
+- 使用容器池 news_traffic0..N 并发执行：
     docker exec <name> python -u /app/action.py '<JSON>'
 - 创建容器时：--init 防僵尸进程，并挂载 HOST_CODE_PATH:/app
 - 每个容器启动后执行一次：关闭包合并（tso/gso/gro off）
 
 长时间执行：
 - 启动仅准备容器池一次
-- 死循环：读取任务 -> 调度执行 -> 汇总 -> 清空CSV(保留表头)
-- 若无任务，等待 10 分钟再来一轮
+- 循环：读取任务 -> 调度执行 -> 汇总
+- 若无任务，退出
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import queue
 import subprocess
 import configparser
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 import threading
@@ -49,12 +49,12 @@ def get_real_username() -> str:
 # ============== 配置 ==============
 CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
 START_IDX = 0
-END_IDX = 21 * 12 - 1                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+END_IDX = 2                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = os.path.join(_project_root, 'traffice_capture')  # 使用相对路径
-DASE_DST = '/netdisk/news_receiver'  # 网络磁盘目标路径（保持绝对路径，因为这是外部存储位置）
+HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture')  # 使用相对路径
+BASE_DST = '/netdisk/news_receiver'  # 网络磁盘目标路径（保持绝对路径，因为这是外部存储位置）
 # =================================
 CREATE_WITH_TTY = True            # 创建容器时加 -itd
 DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
@@ -225,8 +225,7 @@ def mark_failed_record_to_db(engine, domain: str, row_id: int) -> bool:
 
 def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
     """
-    只删除 HOST_CODE_PATH 下的所有子文件夹，但保留 HOST_CODE_PATH 下的文件。
-
+    只删除 HOST_CODE_PATH 下的临时子文件夹，保留 tools 目录。
     示例：
         clear_host_code_subdirs()  # 默认清理 HOST_CODE_PATH
     """
@@ -236,13 +235,14 @@ def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
         return
 
     for entry in base_path.iterdir():
-        # 只处理子目录，不处理文件
-        if entry.is_dir():
+        # 只处理子目录，不处理文件，且跳过需要保留的目录
+        if entry.is_dir() and entry.name != 'tools':
             try:
                 shutil.rmtree(entry)
                 log(f"删除子目录: {entry}")
             except Exception as e:
                 log(f"WARN: 删除子目录失败: {entry} -> {e}")
+
 
 def _wait_before_exec():
     """
@@ -260,6 +260,7 @@ def _wait_before_exec():
         # 还没轮到我，先睡一会儿再抢
         if delta > 0:
             time.sleep(min(delta, 0.5))
+
 def log(*a):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     msg = f"[{ts}] " + " ".join(str(x) for x in a)
@@ -291,10 +292,12 @@ def container_running(name: str) -> bool:
 
 def create_container(name: str, host_code_path: str, image: str):
     uid, gid = str(os.getuid()), str(os.getgid())
+    tools_path = os.path.join(_project_root, 'tools')  # tools 目录路径
     cmd = [
         "docker", "run",
         "--init",
         "--volume", f"{host_code_path}:{CONTAINER_CODE_PATH}",
+        "--volume", f"{tools_path}:{CONTAINER_CODE_PATH}/tools",  # 挂载 tools 目录
         "-e", f"HOST_UID={uid}",
         "-e", f"HOST_GID={gid}",
         "--privileged",
@@ -368,7 +371,6 @@ def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str
 
 def chown_recursive(path: str, uid: int = 1002, gid: int = 1002) -> None:
     """把 path（文件或目录）及其子项（若为目录）设为 uid:gid。尽量不抛异常。"""
-    import os
     try:
         os.chown(path, uid, gid, follow_symlinks=False)
     except Exception:
@@ -415,22 +417,17 @@ def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
             html_path = html_path.replace("/app", HOST_CODE_PATH)
             screenshot_path = screenshot_path.replace("/app", HOST_CODE_PATH)
             log('screenshot_path', screenshot_path)
-            dst = os.path.join(DASE_DST, task['domain'])
+            dst = os.path.join(BASE_DST, task['domain'])
             pcap_dst = os.path.join(dst, 'pcap')
-            if not os.path.exists(pcap_dst):
-                os.makedirs(pcap_dst)
             ssl_key_dst = os.path.join(dst, 'ssl_key')
-            if not os.path.exists(ssl_key_dst):
-                os.makedirs(ssl_key_dst)
             content_dst = os.path.join(dst, 'content')
-            if not os.path.exists(content_dst):
-                os.makedirs(content_dst)
             html_dst = os.path.join(dst, 'html')
-            if not os.path.exists(html_dst):
-                os.makedirs(html_dst)
             screenshot_dst = os.path.join(dst, 'screenshot')
-            if not os.path.exists(screenshot_dst):
-                os.makedirs(screenshot_dst)
+            os.makedirs(pcap_dst, exist_ok=True)
+            os.makedirs(ssl_key_dst, exist_ok=True)
+            os.makedirs(content_dst, exist_ok=True)
+            os.makedirs(html_dst, exist_ok=True)
+            os.makedirs(screenshot_dst, exist_ok=True)
 
             new_pcap = shutil.move(pcap_path, pcap_dst)
             chown_recursive(new_pcap, uid=1002, gid=1002)
@@ -608,7 +605,8 @@ def prepare_pool_once() -> List[str]:
 def sig(signum, _frame):
     log(f"收到中断信号({signum})，立即退出。")
     try:
-        sys.stdout.flush(); sys.stderr.flush()
+        sys.stdout.flush()
+        sys.stderr.flush()
     finally:
         os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
 
@@ -664,7 +662,7 @@ def main():
             for t in all_jobs:
                 q.put(t)
 
-            stats = {"ok": 0, "fail": 0, "errors": []}  # type: ignore[dict-item]
+            stats: Dict[str, Any] = {"ok": 0, "fail": 0, "errors": []}
             log(f"开始执行：jobs={len(all_jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
             with ThreadPoolExecutor(max_workers=len(names)) as pool:
                 for n in names:
