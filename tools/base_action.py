@@ -30,10 +30,8 @@ class BaseAction(ABC):
     # 默认阈值，子类可覆盖
     pcap_lowest_size = 100000
     ssl_key_lowest_size = 1000
-    max_retry_count = 4
 
     def __init__(self):
-        self.current_index = 0
         self.allowed_domain = ""
         self.logger = None  # 延迟初始化，等获取到容器名称后再设置
         self._start_reaper()
@@ -134,13 +132,11 @@ class BaseAction(ABC):
 
     def start_task(self, payload):
         """
-        启动任务的主方法
+        启动任务的主方法（不含重试逻辑，重试由调用方处理）
 
         Args:
             payload: 任务参数，包含container, row_id, url, domain
         """
-        self.current_index += 1
-
         container = payload["container"]
         row_id = payload["row_id"]
         url = payload["url"]
@@ -207,48 +203,44 @@ class BaseAction(ABC):
         page_not_found = self.check_page_not_found(html_path, self.allowed_domain)
 
         # 验证文件
-        need_restart = False
+        validation_passed = False
         if page_not_found:
-            self.logger.warning("页面不存在，跳过重试")
+            self.logger.warning("页面不存在")
         elif self.validate_files(pcap_path, ssl_key_file_path, content_path, html_path):
             self.logger.info("数据文件校验通过")
+            validation_passed = True
         else:
-            need_restart = True
+            self.logger.warning("数据文件校验失败")
 
         # 校验不通过时删除文件
-        if page_not_found or need_restart:
+        if not validation_passed:
             self.delete_invalid_files(pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path)
 
-        if need_restart and self.current_index < self.max_retry_count:
-            self.logger.info("流量文件大小未通过校验，准备重试")
-            time.sleep(5)
-            self.start_task(payload)
+        # 构建结果
+        if validation_passed:
+            result = {
+                "pcap_path": pcap_path or "",
+                "ssl_key_file_path": ssl_key_file_path or "",
+                "content_path": content_path or "",
+                "html_path": html_path or "",
+                "row_id": row_id,
+                "screenshot_path": screenshot_path or ""
+            }
         else:
-            # 构建结果
-            if need_restart or page_not_found:
-                result = {
-                    "pcap_path": "",
-                    "ssl_key_file_path": "",
-                    "content_path": "",
-                    "html_path": "",
-                    "row_id": row_id,
-                    "screenshot_path": ""
-                }
-                if page_not_found:
-                    self.logger.warning(f"页面不存在，任务失败: row_id={row_id}")
-                else:
-                    self.logger.warning(f"重试次数用尽，任务失败: row_id={row_id}")
+            result = {
+                "pcap_path": "",
+                "ssl_key_file_path": "",
+                "content_path": "",
+                "html_path": "",
+                "row_id": row_id,
+                "screenshot_path": ""
+            }
+            if page_not_found:
+                self.logger.warning(f"页面不存在，任务失败: row_id={row_id}")
             else:
-                result = {
-                    "pcap_path": pcap_path or "",
-                    "ssl_key_file_path": ssl_key_file_path or "",
-                    "content_path": content_path or "",
-                    "html_path": html_path or "",
-                    "row_id": row_id,
-                    "screenshot_path": screenshot_path or ""
-                }
+                self.logger.warning(f"文件校验失败，任务失败: row_id={row_id}")
 
-            self.write_result(meta_path, result)
+        self.write_result(meta_path, result)
 
         time.sleep(1)
 

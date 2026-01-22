@@ -3,36 +3,15 @@
 """
 news_receiver_traffic.py
 
-- 从数据库读取记录（id,url,domain）
-- 每行转 JSON：{"row_id": id, "url": url, "domain": domain}
-- 使用容器池 news_traffic0..N 并发执行：
-    docker exec <name> python -u /app/action.py '<JSON>'
-- 创建容器时：--init 防僵尸进程，并挂载 HOST_CODE_PATH:/app
-- 每个容器启动后执行一次：关闭包合并（tso/gso/gro off）
-
-长时间执行：
-- 启动仅准备容器池一次
-- 循环：读取任务 -> 调度执行 -> 汇总
-- 若无任务，退出
+从数据库读取新闻 URL，使用容器池并发采集流量数据。
 """
 
-from __future__ import annotations
-import csv
 import os
 import sys
-import time
-import json
-import signal
-import queue
-import subprocess
 import configparser
-from pathlib import Path
-from typing import Optional, List, Dict, Tuple, Any
-from concurrent.futures import ThreadPoolExecutor
-import shutil
-import threading
+from typing import List, Dict
+
 from sqlalchemy import create_engine, text
-from tqdm import tqdm
 
 # 添加项目根目录到路径
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,668 +19,185 @@ _project_root = os.path.dirname(_current_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-
-def get_real_username() -> str:
-    """获取真实用户名，即使在 sudo 下也能获取原始用户"""
-    return os.environ.get('SUDO_USER') or os.environ.get('USER') or os.getlogin()
+from trafficIngestor.base_traffic_ingestor import BaseTrafficIngestor, get_real_username
 
 
-# ============== 配置 ==============
-CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
-START_IDX = 0
-END_IDX = 2                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
-DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
-# DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
-CONTAINER_CODE_PATH = "/app"
-HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture')  # 使用相对路径
-BASE_DST = '/netdisk/news_receiver'  # 网络磁盘目标路径（保持绝对路径，因为这是外部存储位置）
-# =================================
-CREATE_WITH_TTY = True            # 创建容器时加 -itd
-DOCKER_EXEC_TIMEOUT = 6000        # 单次 docker exec 超时
-RETRY = 5                         # 失败重试次数（不含首次）
-NO_TASK_SLEEP_SECONDS = 600       # 无任务时等待 10 分钟
-# =================================
-EXEC_INTERVAL = 1.0  # 两次 docker exec 之间至少间隔多少秒，可自己调
-DB_CONFIG_PATH = os.path.join(_project_root, 'db', 'db_config.ini')  # 使用相对路径
-BATCH_SIZE = 10000  # 每次从数据库获取的任务数量
-# 需要处理的表及其对应的 domain
-TABLES_CONFIG = [
-    {"table": "dailymail_content", "domain": "dailymail.co.uk"},
-    # {"table": "bbc_content", "domain": "bbc.com"},
-    # {"table": "nih_content", "domain": "nih.gov"},
-    # {"table": "forbeschina_content", "domain": "forbeschina.com"},
-]
+class NewsReceiverTrafficIngestor(BaseTrafficIngestor):
+    """新闻流量采集器"""
 
-_last_exec_ts = 0.0
-_last_exec_lock = threading.Lock()
-_stats_lock = threading.Lock()
-_db_engine = None  # 全局数据库引擎
+    # ============== 配置 ==============
+    CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
+    START_IDX = 0
+    END_IDX = 2
+    HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture')
+    BASE_DST = '/netdisk/news_receiver'
+    DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
+    RETRY = 5
+    BATCH_SIZE = 10000
 
-# 全局统计变量
-_global_start_time = 0.0
-_global_ok = 0
-_global_fail = 0
-_global_task_time = 0.0  # 累计所有任务的实际执行时间
-_pbar: Optional[tqdm] = None  # 全局进度条
+    # 需要处理的表及其对应的 domain
+    TABLES_CONFIG = [
+        {"table": "dailymail_content", "domain": "dailymail.co.uk"},
+        # {"table": "bbc_content", "domain": "bbc.com"},
+        # {"table": "nih_content", "domain": "nih.gov"},
+        # {"table": "forbeschina_content", "domain": "forbeschina.com"},
+    ]
 
-def connect_db():
-    """连接数据库并返回引擎"""
-    cp = configparser.ConfigParser(interpolation=None)
-    if not cp.read(DB_CONFIG_PATH, encoding="utf-8-sig"):
-        raise FileNotFoundError(f"未找到配置文件：{DB_CONFIG_PATH}")
-    if not cp.has_section("mysql"):
-        raise KeyError("缺少配置节 [mysql]")
-
-    c = cp["mysql"]
-
-    def need(k):
-        v = c.get(k, "").strip()
-        if not v:
-            raise ValueError(f"缺少 {k}")
-        return v
-
-    user = need("user")
-    pwd = need("password")
-    host = need("host")
-    port = need("port")
-    db = need("database")
-    url = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db}"
-
-    cs = c.get("charset", "").strip()
-    if cs:
-        url += f"?charset={cs}"
-
-    engine = create_engine(url, pool_pre_ping=True, future=True)
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    return engine
-
-def get_table_name(domain: str) -> str:
-    """根据 domain 返回对应的表名"""
-    table_map = {
+    TABLE_MAP = {
         "bbc.com": "bbc_content",
         "nih.gov": "nih_content",
         "forbeschina.com": "forbeschina_content",
         "dailymail.co.uk": "dailymail_content",
     }
-    return table_map.get(domain, "")
 
-def fetch_jobs_from_db(engine, table: str, domain: str, limit: int = BATCH_SIZE) -> List[Dict[str, str]]:
-    """
-    从数据库获取需要处理的任务（pcap_path 为空的记录）
-    :param engine: 数据库引擎
-    :param table: 表名
-    :param domain: 域名
-    :param limit: 每次获取的数量
-    :return: 任务列表
-    """
-    sql = f"""
-        SELECT id, url
-        FROM {table}
-        WHERE (pcap_path IS NULL OR pcap_path = '')
-        AND url IS NOT NULL AND url <> ''
-        ORDER BY id
-        LIMIT {limit}
-    """
-    
-    jobs: List[Dict[str, str]] = []
-    try:
+    DB_CONFIG_PATH = os.path.join(_project_root, 'db', 'db_config.ini')
+
+    def __init__(self):
+        super().__init__()
+        self._db_engine = None
+
+    def setup(self) -> None:
+        """初始化数据库连接"""
+        try:
+            self._db_engine = self._connect_db()
+            self.log("数据库连接成功")
+        except Exception as e:
+            self.log(f"FATAL: 数据库连接失败，无法继续: {e}")
+            sys.exit(1)
+
+    def _connect_db(self):
+        """连接数据库并返回引擎"""
+        cp = configparser.ConfigParser(interpolation=None)
+        if not cp.read(self.DB_CONFIG_PATH, encoding="utf-8-sig"):
+            raise FileNotFoundError(f"未找到配置文件：{self.DB_CONFIG_PATH}")
+        if not cp.has_section("mysql"):
+            raise KeyError("缺少配置节 [mysql]")
+
+        c = cp["mysql"]
+
+        def need(k):
+            v = c.get(k, "").strip()
+            if not v:
+                raise ValueError(f"缺少 {k}")
+            return v
+
+        user = need("user")
+        pwd = need("password")
+        host = need("host")
+        port = need("port")
+        db = need("database")
+        url = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db}"
+
+        cs = c.get("charset", "").strip()
+        if cs:
+            url += f"?charset={cs}"
+
+        engine = create_engine(url, pool_pre_ping=True, future=True)
         with engine.connect() as conn:
-            result = conn.execute(text(sql))
-            for row in result:
-                row_id = str(row[0])
-                url = row[1]
-                if table == "wikicontent":
-                    url = "https://zh.wikipedia.org/wiki/" + url
-                jobs.append({"row_id": row_id, "url": url, "domain": domain})
-    except Exception as e:
-        log(f"WARN: 从数据库获取任务失败: {e}")
-    
-    return jobs
+            conn.execute(text("SELECT 1"))
+        return engine
 
-def upload_single_record_to_db(engine, domain: str, row_id: int, pcap_path: str,
-                                ssl_key_path: str, content_path: str, html_path: str) -> bool:
-    """上传单条记录到数据库"""
-    table = get_table_name(domain)
-    if not table:
-        log(f"WARN: 不支持的 domain: {domain}，跳过数据库上传")
-        return False
+    def fetch_jobs(self) -> List[Dict[str, str]]:
+        """从数据库获取任务"""
+        all_jobs: List[Dict[str, str]] = []
 
-    sql = f"""
-        UPDATE {table}
-        SET classify_status=%s,
-            traffic_status=%s,
-            pcap_path=%s,
-            ssl_key_path=%s,
-            content_path=%s,
-            html_path=%s,
-            traffic_feature=%s
-        WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
-    """.strip()
+        for table_config in self.TABLES_CONFIG:
+            table = table_config["table"]
+            domain = table_config["domain"]
 
-    data = (0, 0, pcap_path, ssl_key_path, content_path, html_path, None, row_id)
+            sql = f"""
+                SELECT id, url
+                FROM {table}
+                WHERE (pcap_path IS NULL OR pcap_path = '')
+                AND url IS NOT NULL AND url <> ''
+                ORDER BY id
+                LIMIT {self.BATCH_SIZE}
+            """
 
-    conn = engine.raw_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, data)
-            affected = cur.rowcount
-        conn.commit()
-        return affected > 0
-    except Exception as e:
-        log(f"WARN: 数据库更新失败 row_id={row_id}: {e}")
-        return False
-    finally:
-        conn.close()
-
-def mark_failed_record_to_db(engine, domain: str, row_id: int) -> bool:
-    """标记失败记录到数据库，只更新 pcap_path='error'"""
-    table = get_table_name(domain)
-    if not table:
-        log(f"WARN: 不支持的 domain: {domain}，跳过数据库标记")
-        return False
-
-    sql = f"""
-        UPDATE {table}
-        SET pcap_path=%s
-        WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
-    """.strip()
-
-    data = ('error', row_id)
-
-    conn = engine.raw_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, data)
-            affected = cur.rowcount
-        conn.commit()
-        return affected > 0
-    except Exception as e:
-        log(f"WARN: 数据库标记失败 row_id={row_id}: {e}")
-        return False
-    finally:
-        conn.close()
-
-
-def clear_host_code_subdirs(base: str | Path = HOST_CODE_PATH) -> None:
-    """
-    只删除 HOST_CODE_PATH 下的临时子文件夹，保留 tools 目录。
-    示例：
-        clear_host_code_subdirs()  # 默认清理 HOST_CODE_PATH
-    """
-    base_path = Path(base)
-    if not base_path.exists() or not base_path.is_dir():
-        log(f"WARN: HOST_CODE_PATH 不存在或不是目录：{base_path}")
-        return
-
-    for entry in base_path.iterdir():
-        # 只处理子目录，不处理文件，且跳过需要保留的目录
-        if entry.is_dir() and entry.name != 'tools':
             try:
-                shutil.rmtree(entry)
-                log(f"删除子目录: {entry}")
+                with self._db_engine.connect() as conn:
+                    result = conn.execute(text(sql))
+                    for row in result:
+                        row_id = str(row[0])
+                        url = row[1]
+                        all_jobs.append({"row_id": row_id, "url": url, "domain": domain})
+
+                if all_jobs:
+                    self.log(f"从 {table} 获取了 {len(all_jobs)} 条任务")
             except Exception as e:
-                log(f"WARN: 删除子目录失败: {entry} -> {e}")
+                self.log(f"WARN: 从数据库获取任务失败: {e}")
 
+        return all_jobs
 
-def _wait_before_exec():
-    """
-    全局节流：保证所有线程之间，每次 docker exec 至少间隔 EXEC_INTERVAL 秒。
-    """
-    global _last_exec_ts
-    while True:
-        with _last_exec_lock:
-            now = time.monotonic()
-            delta = _last_exec_ts + EXEC_INTERVAL - now
-            if delta <= 0:
-                # 轮到我执行了，记录时间点后返回
-                _last_exec_ts = now
+    def on_task_success(self, task: Dict[str, str], paths: Dict[str, str]) -> None:
+        """任务成功后更新数据库"""
+        try:
+            row_id = int(task.get("row_id", "0"))
+            domain = task.get("domain", "")
+            table = self.TABLE_MAP.get(domain, "")
+
+            if not table:
+                self.log(f"WARN: 不支持的 domain: {domain}，跳过数据库上传")
                 return
-        # 还没轮到我，先睡一会儿再抢
-        if delta > 0:
-            time.sleep(min(delta, 0.5))
 
-def log(*a):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"[{ts}] " + " ".join(str(x) for x in a)
-    if _pbar is not None:
-        tqdm.write(msg)
-    else:
-        print(msg, flush=True)
+            sql = f"""
+                UPDATE {table}
+                SET classify_status=%s,
+                    traffic_status=%s,
+                    pcap_path=%s,
+                    ssl_key_path=%s,
+                    content_path=%s,
+                    html_path=%s,
+                    traffic_feature=%s
+                WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
+            """.strip()
 
-def run(cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+            data = (0, 0, paths['pcap'], paths['ssl_key'], paths['content'], paths['html'], None, row_id)
 
-def ensure_docker_available():
-    try:
-        run(["docker", "version"]).check_returncode()
-    except Exception as e:
-        log("FATAL: docker 不可用。", e)
-        sys.exit(2)
-
-def container_exists(name: str) -> Optional[bool]:
-    cp = run(["docker", "inspect", "-f", "{{.State.Running}}", name])
-    if cp.returncode != 0:
-        return None
-    out = cp.stdout.strip().lower()
-    return (out == "true") or (out == "false")
-
-def container_running(name: str) -> bool:
-    cp = run(["docker", "inspect", "-f", "{{.State.Running}}", name])
-    return (cp.returncode == 0) and (cp.stdout.strip().lower() == "true")
-
-def create_container(name: str, host_code_path: str, image: str):
-    uid, gid = str(os.getuid()), str(os.getgid())
-    tools_path = os.path.join(_project_root, 'tools')  # tools 目录路径
-    cmd = [
-        "docker", "run",
-        "--init",
-        "--volume", f"{host_code_path}:{CONTAINER_CODE_PATH}",
-        "--volume", f"{tools_path}:{CONTAINER_CODE_PATH}/tools",  # 挂载 tools 目录
-        "-e", f"HOST_UID={uid}",
-        "-e", f"HOST_GID={gid}",
-        "--privileged",
-    ]
-    if CREATE_WITH_TTY:
-        cmd += ["-itd"]
-    else:
-        cmd += ["-d"]
-    cmd += ["--name", name, image, "/bin/bash"]
-    cp = run(cmd)
-    if cp.returncode != 0:
-        log(f"FATAL: 创建容器失败: {name} -> {cp.stderr.strip()}")
-        sys.exit(2)
-    log(f"created container: {name}")
-
-def start_container(name: str):
-    cp = run(["docker", "start", name])
-    if cp.returncode != 0:
-        log(f"FATAL: 启动容器失败: {name} -> {cp.stderr.strip()}")
-        sys.exit(2)
-    log(f"started container: {name}")
-
-def disable_offload_once(name: str):
-    """
-    在容器里仅执行一次：关闭包合并（TSO/GSO/GRO）
-    使用标记文件 /tmp/.offload_disabled 防重复执行。
-    有 sudo 则 sudo，没有就直接 ethtool。
-    """
-    shell = r'''
-        if [ -f /tmp/.offload_disabled ]; then
-            exit 0
-        fi
-        if command -v sudo >/dev/null 2>&1; then
-            sudo ethtool -K eth0 tso off gso off gro off
-        else
-            ethtool -K eth0 tso off gso off gro off
-        fi
-        rc=$?
-        if [ $rc -eq 0 ]; then
-            touch /tmp/.offload_disabled
-        fi
-        exit $rc
-    '''
-    cp = run(["docker", "exec", name, "sh", "-lc", shell])
-    if cp.returncode == 0:
-        log(f"{name}: offload disabled (TSO/GSO/GRO off)")
-    else:
-        msg = (cp.stderr or cp.stdout).strip()
-        log(f"WARN: {name}: 关闭包合并失败：{msg if msg else 'unknown error'}")
-
-
-def ensure_container_ready(name: str, host_code_path: str, image: str) -> bool:
-    """
-    确保容器存在并处于运行状态。
-    返回值: 是否为“本次新创建”的容器（True/False）。
-    """
-    exists = container_exists(name)
-    if exists is None:
-        create_container(name, host_code_path, image)   # --init -itd 已经运行中
-        return True
-    if not container_running(name):
-        start_container(name)                            # 仅启动，不做 offload
-    return False
-
-
-def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str]:
-    return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
-
-
-
-
-def chown_recursive(path: str, uid: int = 1002, gid: int = 1002) -> None:
-    """把 path（文件或目录）及其子项（若为目录）设为 uid:gid。尽量不抛异常。"""
-    try:
-        os.chown(path, uid, gid, follow_symlinks=False)
-    except Exception:
-        pass
-    if os.path.isdir(path):
-        for root, dirs, files in os.walk(path, followlinks=False):
-            for name in dirs:
-                p = os.path.join(root, name)
-                try: os.chown(p, uid, gid, follow_symlinks=False)
-                except Exception: pass
-            for name in files:
-                p = os.path.join(root, name)
-                try: os.chown(p, uid, gid, follow_symlinks=False)
-                except Exception: pass
-
-def exec_once(task: Dict[str, str]) -> Tuple[bool, str]:
-    _wait_before_exec()
-    payload = json.dumps(task, ensure_ascii=False)
-    container = task["container"]
-    cmd = [
-        "docker", "exec", container,
-        "python", "-u", f"{CONTAINER_CODE_PATH}/action.py",
-        payload
-    ]
-    log("执行命令", cmd)
-    cp = run(cmd, timeout=DOCKER_EXEC_TIMEOUT)
-    if cp.returncode == 0:
-        try:
-            with open(HOST_CODE_PATH + f"/meta/{container}_last.json", "r", encoding="utf-8") as f:
-                result = json.load(f)
-            log('result', result)
-            pcap_path = result.get("pcap_path")
-            ssl_key_file_path = result.get("ssl_key_file_path")
-            content_path = result.get("content_path")
-            html_path = result.get("html_path")
-            screenshot_path = result.get("screenshot_path")
-
-            if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
-                return False, "result JSON missing required paths"
-
-            pcap_path = pcap_path.replace("/app", HOST_CODE_PATH)
-            ssl_key_file_path = ssl_key_file_path.replace("/app", HOST_CODE_PATH)
-            content_path = content_path.replace("/app", HOST_CODE_PATH)
-            html_path = html_path.replace("/app", HOST_CODE_PATH)
-            screenshot_path = screenshot_path.replace("/app", HOST_CODE_PATH)
-            log('screenshot_path', screenshot_path)
-            dst = os.path.join(BASE_DST, task['domain'])
-            pcap_dst = os.path.join(dst, 'pcap')
-            ssl_key_dst = os.path.join(dst, 'ssl_key')
-            content_dst = os.path.join(dst, 'content')
-            html_dst = os.path.join(dst, 'html')
-            screenshot_dst = os.path.join(dst, 'screenshot')
-            os.makedirs(pcap_dst, exist_ok=True)
-            os.makedirs(ssl_key_dst, exist_ok=True)
-            os.makedirs(content_dst, exist_ok=True)
-            os.makedirs(html_dst, exist_ok=True)
-            os.makedirs(screenshot_dst, exist_ok=True)
-
-            new_pcap = shutil.move(pcap_path, pcap_dst)
-            chown_recursive(new_pcap, uid=1002, gid=1002)
-
-            new_ssl = shutil.move(ssl_key_file_path, ssl_key_dst)
-            chown_recursive(new_ssl, uid=1002, gid=1002)
-
-            new_content = shutil.move(content_path, content_dst)
-            chown_recursive(new_content, uid=1002, gid=1002)
-
-            new_html = shutil.move(html_path, html_dst)
-            chown_recursive(new_html, uid=1002, gid=1002)
-
-            new_screenshot = shutil.move(screenshot_path, screenshot_dst)
-            chown_recursive(new_screenshot, uid=1002, gid=1002)
-
-            # 上传到数据库
+            conn = self._db_engine.raw_connection()
             try:
-                row_id_int = int(task.get("row_id", "0"))
-                domain = task.get("domain", "")
-                if _db_engine and domain:
-                    db_ok = upload_single_record_to_db(
-                        _db_engine, domain, row_id_int,
-                        new_pcap, new_ssl, new_content, new_html
-                    )
-                    if db_ok:
-                        log(f"数据库更新成功 row_id={row_id_int}")
-                    else:
-                        log(f"数据库更新失败或无匹配行 row_id={row_id_int}")
-            except Exception as e:
-                log(f"WARN: 数据库操作异常 row_id={task.get('row_id','')}: {e}")
-
-            return True, ""
-        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            return False, f"post-processing error: {e}"
-    return False, (cp.stderr.strip() or cp.stdout.strip())
-
-
-def worker_loop(container: str, q: "queue.Queue[Dict[str, str]]", stats: dict, retry: int):
-    """
-    带重试的 worker：每个任务最多尝试 retry+1 次（首次 + retry 次重试）
-    """
-    while True:
-        try:
-            task = q.get_nowait()
-        except queue.Empty:
-            return
-        row_id = task.get("row_id", "")
-        url    = task.get("url", "")
-        task["container"] = container
-
-        ok = False
-        err = ""
-        task_start_time = time.time()  # 记录任务开始时间
-        for attempt in range(retry + 1):  # 首次 + retry 次重试
-            try:
-                if attempt == 0:
-                    log(f"{container} -> start [{row_id}] {url}")
+                with conn.cursor() as cur:
+                    cur.execute(sql, data)
+                    affected = cur.rowcount
+                conn.commit()
+                if affected > 0:
+                    self.log(f"数据库更新成功 row_id={row_id}")
                 else:
-                    log(f"{container} -> retry {attempt}/{retry} [{row_id}] {url}")
+                    self.log(f"数据库更新失败或无匹配行 row_id={row_id}")
+            finally:
+                conn.close()
 
-                ok, err = exec_once(task)
-                if ok:
-                    task_elapsed = time.time() - task_start_time
-                    log(f"{container} -> done  [{row_id}] {url} ({task_elapsed:.1f}s)")
-                    with _stats_lock:
-                        stats["ok"] += 1
-                    _update_progress(ok=True, task_elapsed=task_elapsed)
-                    break  # 成功，跳出重试循环
-                else:
-                    log(f"{container} -> fail  [{row_id}] {err[:200]}")
-                    if attempt < retry:
-                        time.sleep(5)  # 重试前等待 5 秒
+        except Exception as e:
+            self.log(f"WARN: 数据库操作异常 row_id={task.get('row_id', '')}: {e}")
 
-            except subprocess.TimeoutExpired:
-                err = f"timeout>{DOCKER_EXEC_TIMEOUT}s"
-                log(f"{container} -> timeout [{row_id}] {url}")
-                if attempt < retry:
-                    time.sleep(5)
+    def on_task_failed(self, task: Dict[str, str], error: str) -> None:
+        """任务失败后标记数据库"""
+        try:
+            row_id = int(task.get("row_id", "0"))
+            domain = task.get("domain", "")
+            table = self.TABLE_MAP.get(domain, "")
 
-            except Exception as e:
-                err = repr(e)
-                log(f"{container} -> error [{row_id}] {err}")
-                if attempt < retry:
-                    time.sleep(5)
+            if not table:
+                return
 
-        # 所有重试都失败
-        if not ok:
-            log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
-            # 失败时也写数据库，标记 pcap_path='error'
+            sql = f"""
+                UPDATE {table}
+                SET pcap_path=%s
+                WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
+            """.strip()
+
+            conn = self._db_engine.raw_connection()
             try:
-                row_id_int = int(task.get("row_id", "0"))
-                domain = task.get("domain", "")
-                if _db_engine and domain:
-                    db_ok = mark_failed_record_to_db(_db_engine, domain, row_id_int)
-                    if db_ok:
-                        log(f"失败记录已标记到数据库 row_id={row_id_int}")
-                    else:
-                        log(f"数据库标记失败或无匹配行 row_id={row_id_int}")
-            except Exception as e:
-                log(f"WARN: 数据库标记异常 row_id={task.get('row_id','')}: {e}")
-            with _stats_lock:
-                stats["fail"] += 1
-                stats["errors"].append((task, err))
-            task_elapsed = time.time() - task_start_time
-            _update_progress(ok=False, task_elapsed=task_elapsed)
+                with conn.cursor() as cur:
+                    cur.execute(sql, ('error', row_id))
+                conn.commit()
+                self.log(f"失败记录已标记到数据库 row_id={row_id}")
+            finally:
+                conn.close()
 
-        q.task_done()
-
-def _update_progress(ok: bool, task_elapsed: float = 0.0) -> None:
-    """更新全局进度条"""
-    global _global_ok, _global_fail, _global_task_time
-    with _stats_lock:
-        if ok:
-            _global_ok += 1
-        else:
-            _global_fail += 1
-        _global_task_time += task_elapsed  # 累计实际任务执行时间
-        
-        total_done = _global_ok + _global_fail
-        elapsed = time.time() - _global_start_time
-        elapsed_min = elapsed / 60.0
-        
-        # 计算统计数据
-        per_min = total_done / elapsed_min if elapsed_min > 0 else 0
-        avg_time = _global_task_time / total_done if total_done > 0 else 0  # 使用累计任务时间
-        
-        if _pbar is not None:
-            _pbar.set_postfix_str(
-                f"运行: {elapsed_min:.1f}分钟 | 成功: {_global_ok} | 失败: {_global_fail} | "
-                f"每分钟: {per_min:.2f} | 平均耗时: {avg_time:.1f}秒"
-            )
-            _pbar.update(1)
-
-def prepare_pool_once() -> List[str]:
-    ensure_docker_available()
-
-    host_code = Path(HOST_CODE_PATH)
-    if not host_code.exists():
-        log(f"WARN: 宿主机代码目录不存在：{host_code}，仍会尝试挂载。")
-    if not host_code.is_absolute():
-        log(f"WARN: 建议使用绝对路径挂载，当前={host_code}")
-
-    names = build_container_names(CONTAINER_PREFIX, START_IDX, END_IDX)
-    log(f"容器池规模={len(names)}: {names[0]} … {names[-1]}")
-
-    created: List[str] = []
-    created_lock = threading.Lock()
-
-    def check_and_create(name: str) -> None:
-        """检查容器是否存在，不存在则创建"""
-        exists = container_exists(name)
-        if exists is None:
-            create_container(name, str(host_code), DOCKER_IMAGE)
-            with created_lock:
-                created.append(name)
-
-    # Pass 1：缺就建（并发执行，记录本轮新建的容器名）
-    with ThreadPoolExecutor(max_workers=min(len(names), 20)) as pool:
-        pool.map(check_and_create, names)
-
-    # Pass 2：不在运行的统一 start（包含老容器；新建容器通常已在运行，冪等调用无害）
-    for n in names:
-        if not container_running(n):
-            start_container(n)
-
-    time.sleep(5)
-    # Pass 3：所有 docker run 完成后，按顺序对“本次新建”的容器执行一次 offload 关闭
-    for n in created:
-        disable_offload_once(n)
-
-    return names
-
-# ——收到中断后“立刻”退出（不等线程/子进程收尾，不跑 finally）——
-def sig(signum, _frame):
-    log(f"收到中断信号({signum})，立即退出。")
-    try:
-        sys.stdout.flush()
-        sys.stderr.flush()
-    finally:
-        os._exit(128 + signum)  # 130=SIGINT, 143=SIGTERM
-
-def main():
-    global _db_engine, _global_start_time, _global_ok, _global_fail, _global_task_time, _pbar
-    signal.signal(signal.SIGINT, sig)
-    signal.signal(signal.SIGTERM, sig)
-
-    # 初始化数据库连接
-    try:
-        _db_engine = connect_db()
-        log("数据库连接成功")
-    except Exception as e:
-        log(f"FATAL: 数据库连接失败，无法继续: {e}")
-        return
-
-    names = prepare_pool_once()
-    total_ok = 0
-    total_fail = 0
-    batch_num = 0
-    
-    # 初始化全局统计
-    _global_start_time = time.time()
-    _global_ok = 0
-    _global_fail = 0
-    _global_task_time = 0.0
-    
-    # 创建常驻进度条（total=None 表示未知总数）
-    _pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
-                 bar_format='{desc}: {n_fmt}{unit} [{postfix}]')
-
-    try:
-        while True:
-            # 从所有表中获取任务
-            all_jobs: List[Dict[str, str]] = []
-            for table_config in TABLES_CONFIG:
-                table = table_config["table"]
-                domain = table_config["domain"]
-                jobs = fetch_jobs_from_db(_db_engine, table, domain, BATCH_SIZE)
-                if jobs:
-                    log(f"从 {table} 获取了 {len(jobs)} 条任务")
-                    all_jobs.extend(jobs)
-            
-            if not all_jobs:
-                log("所有表都没有需要处理的任务，退出。")
-                break
-            
-            batch_num += 1
-            log(f"===== 批次 {batch_num}: 共 {len(all_jobs)} 条任务 =====")
-
-            # 调度执行
-            q: "queue.Queue[Dict[str, str]]" = queue.Queue()
-            for t in all_jobs:
-                q.put(t)
-
-            stats: Dict[str, Any] = {"ok": 0, "fail": 0, "errors": []}
-            log(f"开始执行：jobs={len(all_jobs)}，并发容器={len(names)}，镜像={DOCKER_IMAGE}")
-            with ThreadPoolExecutor(max_workers=len(names)) as pool:
-                for n in names:
-                    pool.submit(worker_loop, n, q, stats, RETRY)
-                q.join()
-
-            # 汇总本批次
-            total_ok += stats['ok']
-            total_fail += stats['fail']
-            log(f"[批次 {batch_num} 汇总] success={stats['ok']} fail={stats['fail']} batch_total={len(all_jobs)}")
-            if stats["errors"]:
-                log("失败样例：")
-                for task, err in stats["errors"][:10]:
-                    log(f" - id={task.get('row_id','')} url={task.get('url','')} err={err[:200]}")
-            
-            # 清理 HOST_CODE_PATH 下的子目录，为下一批做准备
-            clear_host_code_subdirs()
-            log(f"已清理 HOST_CODE_PATH 子目录，准备下一批次...")
-
-    except Exception as e:
-        log(f"WARN: 执行异常：{e}")
-    finally:
-        # 关闭进度条
-        if _pbar is not None:
-            _pbar.close()
-    
-    # 最终汇总
-    elapsed = time.time() - _global_start_time
-    elapsed_min = elapsed / 60.0
-    total_done = _global_ok + _global_fail
-    per_min = total_done / elapsed_min if elapsed_min > 0 else 0
-    avg_time = _global_task_time / total_done if total_done > 0 else 0  # 使用累计任务时间
-    log(f"[最终汇总] 批次={batch_num} | 运行时间={elapsed_min:.1f}分钟 | 总数={total_done} | 成功={_global_ok} | 失败={_global_fail} | 每分钟={per_min:.2f} | 平均耗时={avg_time:.1f}秒")
-
-    # 等待并清理容器
-    # time.sleep(60)
+        except Exception as e:
+            self.log(f"WARN: 数据库标记异常 row_id={task.get('row_id', '')}: {e}")
 
 
 if __name__ == "__main__":
-    subprocess.run(f'docker ps -aq -f "name=^{CONTAINER_PREFIX}" | xargs -r docker rm -f', shell=True, check=False)
-    clear_host_code_subdirs()
-    main()
+    NewsReceiverTrafficIngestor.main()
