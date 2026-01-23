@@ -26,13 +26,13 @@ class NewsReceiverTrafficIngestor(BaseTrafficIngestor):
     """新闻流量采集器"""
 
     # ============== 配置 ==============
-    CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
-    CONTAINER_COUNT = 21 * 5
-    HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture')
+    CONTAINER_PREFIX = f"{get_real_username()}_traffic_capture_single_db"
+    CONTAINER_COUNT = 2#21 * 5
+    HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_single_db')
     BASE_DST = '/netdisk/news_receiver'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
     RETRY = 5
-    BATCH_SIZE = 10000
+    BATCH_SIZE = 1000
 
     # 需要处理的表及其对应的 domain
     TABLES_CONFIG = [

@@ -581,7 +581,7 @@ class BaseTrafficIngestor(ABC):
 
         # 创建常驻进度条（total=None 表示未知总数）
         self._pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
-                         bar_format='{desc}: {n_fmt}{unit} [{postfix}]')
+                         bar_format='{desc}: {n_fmt}{unit} [{postfix_str}]')
 
         try:
             while True:
