@@ -160,6 +160,7 @@ class BaseAction(ABC):
         html_path = ""
         screenshot_path = ""
         pcap_path = ""
+        current_url = ""
 
         # 开流量收集
         traffic_thread = threading.Thread(
@@ -177,7 +178,7 @@ class BaseAction(ABC):
 
         self.logger.info(f"开始访问第{row_id}的词条：{url}")
         try:
-            content_path, html_path, screenshot_path = open_url_and_save_content(
+            content_path, html_path, screenshot_path, current_url = open_url_and_save_content(
                 browser, url, ssl_key_file_path,
                 data_base_dir=_project_root
             )
@@ -224,7 +225,8 @@ class BaseAction(ABC):
                 "content_path": content_path or "",
                 "html_path": html_path or "",
                 "row_id": row_id,
-                "screenshot_path": screenshot_path or ""
+                "screenshot_path": screenshot_path or "",
+                "current_url": current_url or ""
             }
         else:
             result = {
@@ -233,7 +235,8 @@ class BaseAction(ABC):
                 "content_path": "",
                 "html_path": "",
                 "row_id": row_id,
-                "screenshot_path": ""
+                "screenshot_path": "",
+                "current_url": ""
             }
             if page_not_found:
                 self.logger.warning(f"页面不存在，任务失败: row_id={row_id}")

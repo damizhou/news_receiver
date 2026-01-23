@@ -204,6 +204,7 @@ def open_url_and_save_content(driver, url, ssl_key_file_path, wait_secs=8,
         content_path: 文本内容文件路径
         html_path: HTML文件路径
         screenshot_path: 截图文件路径（如果启用）
+        current_url: 重定向后的真实URL
     """
     if data_base_dir is None:
         data_base_dir = _project_root
@@ -238,7 +239,10 @@ def open_url_and_save_content(driver, url, ssl_key_file_path, wait_secs=8,
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
 
-    return content_path, html_path, screenshot_path
+    # 获取重定向后的真实URL
+    current_url = driver.current_url
+
+    return content_path, html_path, screenshot_path, current_url
 
 
 def screenshot_full_page(driver: webdriver.Chrome, out_path: Path, dpr: Optional[float] = None) -> None:

@@ -148,11 +148,12 @@ class NewsReceiverTrafficIngestor(BaseTrafficIngestor):
                     ssl_key_path=%s,
                     content_path=%s,
                     html_path=%s,
-                    traffic_feature=%s
+                    traffic_feature=%s,
+                    current_url=%s
                 WHERE id=%s AND (pcap_path IS NULL OR pcap_path = '')
             """.strip()
 
-            data = (0, 0, paths['pcap'], paths['ssl_key'], paths['content'], paths['html'], None, row_id)
+            data = (0, 0, paths['pcap'], paths['ssl_key'], paths['content'], paths['html'], None, paths.get('current_url', ''), row_id)
 
             conn = self._db_engine.raw_connection()
             try:

@@ -427,6 +427,7 @@ class BaseTrafficIngestor(ABC):
         content_path = result.get("content_path")
         html_path = result.get("html_path")
         screenshot_path = result.get("screenshot_path")
+        current_url = result.get("current_url", "")
 
         if not all([pcap_path, ssl_key_file_path, content_path, html_path, screenshot_path]):
             return False, "result JSON missing required paths"
@@ -455,7 +456,8 @@ class BaseTrafficIngestor(ABC):
             'ssl_key': new_ssl,
             'content': new_content,
             'html': new_html,
-            'screenshot': new_screenshot
+            'screenshot': new_screenshot,
+            'current_url': current_url
         })
 
         return True, ""
