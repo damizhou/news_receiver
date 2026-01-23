@@ -386,9 +386,9 @@ class BaseTrafficIngestor(ABC):
             avg_time = self._global_task_time / total_done if total_done > 0 else 0
 
             if self._pbar is not None:
-                self._pbar.set_postfix_str(
-                    f"运行: {elapsed_min:.1f}分钟 | 成功: {self._global_ok} | 失败: {self._global_fail} | "
-                    f"每分钟: {per_min:.2f} | 平均耗时: {avg_time:.1f}秒"
+                self._pbar.set_description(
+                    f"任务进度: {total_done}个 [运行: {elapsed_min:.1f}分钟 | 成功: {self._global_ok} | 失败: {self._global_fail} | "
+                    f"每分钟: {per_min:.2f} | 平均耗时: {avg_time:.1f}秒]"
                 )
                 self._pbar.update(1)
 
@@ -580,8 +580,9 @@ class BaseTrafficIngestor(ABC):
         batch_num = 0
 
         # 创建常驻进度条（total=None 表示未知总数）
-        self._pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
-                         bar_format='{desc}: {n_fmt}{unit} [{postfix_str}]')
+        self._pbar = tqdm(total=None, unit="个", position=0, leave=True,
+                         bar_format='{desc}')
+        self._pbar.set_description("任务进度: 0个 [初始化中...]")
 
         try:
             while True:
