@@ -24,61 +24,36 @@ _project_root = os.path.dirname(_current_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-# JavaScript代码：全选并复制页面内容
+# JavaScript代码：全选并复制页面内容（模拟 Ctrl+A + Ctrl+C）
 JS_SELECT_ALL_AND_COPY_CAPTURE = r"""
 function __select_all_and_copy_capture(){
-  try{
+  try {
     const sel = window.getSelection();
+
     // 备份原选区
     const saved = [];
-    for (let i=0;i<sel.rangeCount;i++){ saved.push(sel.getRangeAt(i).cloneRange()); }
-    function restore(){
-      sel.removeAllRanges();
-      for (const r of saved) sel.addRange(r);
-    }
-    // Ctrl+A：全选 <body>（尽量贴近浏览器行为）
+    for (let i = 0; i < sel.rangeCount; i++) saved.push(sel.getRangeAt(i).cloneRange());
+
+    // 全选整个文档（模拟 Ctrl+A）
     sel.removeAllRanges();
-    const root = document.body || document.documentElement;
     const range = document.createRange();
-    range.selectNodeContents(root);
+    range.selectNodeContents(document.documentElement);
     sel.addRange(range);
 
-    function selectionPlain(){ return sel.toString(); }
-    function selectionHTML(){
-      const box = document.createElement('div');
-      for (let i=0;i<sel.rangeCount;i++) box.appendChild(sel.getRangeAt(i).cloneContents());
-      return box.innerHTML;
-    }
-    const defaultPlain = selectionPlain();
-    const defaultHtml  = selectionHTML();
+    // 获取纯文本（等同于 Ctrl+C 复制后粘贴的效果）
+    const plain = sel.toString();
 
-    // 监听 copy，尽量捕获站点可能改写的内容（若站点在 copy 里 setData）
-    let copiedPlain = null, copiedHtml = null;
-    function onCopyCapture(e){ /* 预留 */ }
-    function onCopyBubble(e){
-      try{ copiedHtml  = e.clipboardData.getData('text/html')  || null; }catch(_){}
-      try{ copiedPlain = e.clipboardData.getData('text/plain') || null; }catch(_){}
-    }
-    document.addEventListener('copy', onCopyCapture, true);
-    document.addEventListener('copy', onCopyBubble, false);
+    // 获取 HTML
+    const box = document.createElement('div');
+    box.appendChild(range.cloneContents());
+    const html = box.innerHTML;
 
-    let execOk = false;
-    try { execOk = document.execCommand('copy'); } catch(_){}
+    // 恢复选区
+    sel.removeAllRanges();
+    for (const r of saved) sel.addRange(r);
 
-    document.removeEventListener('copy', onCopyCapture, true);
-    document.removeEventListener('copy', onCopyBubble, false);
-    restore();
-
-    // 如果站点没改写，则 copied* 可能是空，就用默认选区内容兜底
-    return {
-      execOk,
-      plain: copiedPlain  != null && copiedPlain  !== '' ? copiedPlain  : defaultPlain,
-      html:  copiedHtml   != null && copiedHtml   !== '' ? copiedHtml   : defaultHtml,
-      // 也把默认的带上，便于对比
-      _defaultPlain: defaultPlain,
-      _defaultHtml:  defaultHtml
-    };
-  }catch(e){
+    return { plain, html };
+  } catch(e) {
     return { error: String(e) };
   }
 }

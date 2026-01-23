@@ -32,5 +32,5 @@ if __name__ == '__main__':
     convert_users_to_repos_format(
         'users.csv',
         'users_converted.csv',
-        repeat_times=10
+        repeat_times=30
     )

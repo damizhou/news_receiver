@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
 
+from tqdm import tqdm
+
 # 添加项目根目录到路径
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_current_dir)
@@ -79,10 +81,13 @@ class BaseTrafficIngestor(ABC):
 
     # ============== 日志 ==============
     def log(self, *args) -> None:
-        """打印带时间戳的日志"""
+        """打印带时间戳的日志，适配进度条"""
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         msg = f"[{ts}] " + " ".join(str(x) for x in args)
-        print(msg, flush=True)
+        if self._pbar is not None:
+            tqdm.write(msg)
+        else:
+            print(msg, flush=True)
 
     # ============== 命令执行 ==============
     def run_cmd(self, cmd: List[str], timeout: Optional[int] = None) -> subprocess.CompletedProcess:
@@ -229,17 +234,14 @@ class BaseTrafficIngestor(ABC):
             self.log(f"WARN: HOST_CODE_PATH 不存在或不是目录：{base_path}")
             return
 
-        deleted_count = 0
         for entry in base_path.iterdir():
             if entry.is_dir() and entry.name != 'tools':
                 try:
                     shutil.rmtree(entry)
-                    deleted_count += 1
+                    self.log(f"删除子目录: {entry}")
                 except Exception as e:
                     self.log(f"WARN: 删除子目录失败: {entry} -> {e}")
 
-        if deleted_count > 0:
-            self.log(f"清理完成，删除了 {deleted_count} 个临时子目录")
 
     def chown_recursive(self, path: str, uid: int = None, gid: int = None) -> None:
         """递归设置文件/目录的所有者"""
@@ -303,7 +305,7 @@ class BaseTrafficIngestor(ABC):
         return jobs, header_fields
 
     def remove_from_csv(self, csv_path: str, row_id: str) -> None:
-        """从 CSV 中删除指定记录（原子操作）"""
+        """从 CSV 中删除指定记录（原子操作，一次只删除一条）"""
         target_id = str(row_id).strip()
         if not target_id:
             return
@@ -326,9 +328,16 @@ class BaseTrafficIngestor(ABC):
                         return (v or "").strip()
                 return ""
 
-            remaining_rows = [r for r in rows if get_id(r) != target_id]
+            # 只删除第一条匹配的记录
+            remaining_rows = []
+            removed = False
+            for r in rows:
+                if not removed and get_id(r) == target_id:
+                    removed = True  # 跳过第一条匹配的记录
+                else:
+                    remaining_rows.append(r)
 
-            if len(remaining_rows) == len(rows):
+            if not removed:
                 return
 
             tmp_fd, tmp_path = tempfile.mkstemp(dir=p.parent, suffix=".tmp", prefix=".csv_")
@@ -358,6 +367,31 @@ class BaseTrafficIngestor(ABC):
                     return
             if delta > 0:
                 time.sleep(min(delta, 0.5))
+
+    # ============== 进度条 ==============
+    def _update_progress(self, ok: bool, task_elapsed: float = 0.0) -> None:
+        """更新全局进度条"""
+        with self._stats_lock:
+            if ok:
+                self._global_ok += 1
+            else:
+                self._global_fail += 1
+            self._global_task_time += task_elapsed
+
+            total_done = self._global_ok + self._global_fail
+            elapsed = time.time() - self._global_start_time
+            elapsed_min = elapsed / 60.0
+
+            # 计算统计数据
+            per_min = total_done / elapsed_min if elapsed_min > 0 else 0
+            avg_time = self._global_task_time / total_done if total_done > 0 else 0
+
+            if self._pbar is not None:
+                self._pbar.set_postfix_str(
+                    f"运行: {elapsed_min:.1f}分钟 | 成功: {self._global_ok} | 失败: {self._global_fail} | "
+                    f"每分钟: {per_min:.2f} | 平均耗时: {avg_time:.1f}秒"
+                )
+                self._pbar.update(1)
 
     # ============== 任务执行 ==============
     def exec_once(self, task: Dict[str, str]) -> Tuple[bool, str]:
@@ -464,6 +498,7 @@ class BaseTrafficIngestor(ABC):
                         self.log(f"{container} -> done  [{row_id}] {url} ({task_elapsed:.1f}s)")
                         with self._stats_lock:
                             stats["ok"] += 1
+                        self._update_progress(ok=True, task_elapsed=task_elapsed)
                         break
                     else:
                         self.log(f"{container} -> fail  [{row_id}] {err[:200]}")
@@ -483,11 +518,13 @@ class BaseTrafficIngestor(ABC):
                         time.sleep(5)
 
             if not ok:
+                task_elapsed = time.time() - task_start_time
                 self.log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
                 self.on_task_failed(task, err)
                 with self._stats_lock:
                     stats["fail"] += 1
                     stats["errors"].append((task, err))
+                self._update_progress(ok=False, task_elapsed=task_elapsed)
 
             q.task_done()
 
@@ -536,7 +573,14 @@ class BaseTrafficIngestor(ABC):
         names = self.prepare_pool_once()
 
         self._global_start_time = time.time()
+        self._global_ok = 0
+        self._global_fail = 0
+        self._global_task_time = 0.0
         batch_num = 0
+
+        # 创建常驻进度条（total=None 表示未知总数）
+        self._pbar = tqdm(total=None, desc="任务进度", unit="个", position=0, leave=True,
+                         bar_format='{desc}: {n_fmt}{unit} [{postfix}]')
 
         try:
             while True:
@@ -565,12 +609,20 @@ class BaseTrafficIngestor(ABC):
         except Exception as e:
             self.log(f"WARN: 执行异常：{e}")
         finally:
+            # 关闭进度条
+            if self._pbar is not None:
+                self._pbar.close()
+                self._pbar = None
             self.cleanup()
 
         # 最终汇总
         elapsed = time.time() - self._global_start_time
         elapsed_min = elapsed / 60.0
-        self.log(f"[最终汇总] 批次={batch_num} | 运行时间={elapsed_min:.1f}分钟")
+        total_done = self._global_ok + self._global_fail
+        per_min = total_done / elapsed_min if elapsed_min > 0 else 0
+        avg_time = self._global_task_time / total_done if total_done > 0 else 0
+        self.log(f"[最终汇总] 批次={batch_num} | 运行时间={elapsed_min:.1f}分钟 | 总数={total_done} | "
+                 f"成功={self._global_ok} | 失败={self._global_fail} | 每分钟={per_min:.2f} | 平均耗时={avg_time:.1f}秒")
 
     def setup(self) -> None:
         """初始化设置，子类可覆盖"""
