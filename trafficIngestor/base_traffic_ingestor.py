@@ -55,8 +55,7 @@ class BaseTrafficIngestor(ABC):
     BASE_DST: str = ""
 
     # ============== 可选配置（有默认值）==============
-    START_IDX: int = 0
-    END_IDX: int = 2
+    CONTAINER_COUNT: int = 3
     DOCKER_IMAGE: str = "chuanzhoupan/trace_spider:250912"
     CONTAINER_CODE_PATH: str = "/app"
     CREATE_WITH_TTY: bool = True
@@ -184,7 +183,7 @@ class BaseTrafficIngestor(ABC):
 
     def build_container_names(self) -> List[str]:
         """构建容器名列表"""
-        return [f"{self.CONTAINER_PREFIX}{i}" for i in range(self.START_IDX, self.END_IDX + 1)]
+        return [f"{self.CONTAINER_PREFIX}{i}" for i in range(self.CONTAINER_COUNT)]
 
     def prepare_pool_once(self) -> List[str]:
         """准备容器池，返回容器名列表"""

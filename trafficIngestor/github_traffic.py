@@ -24,8 +24,7 @@ class GithubTrafficIngestor(BaseTrafficIngestor):
 
     # ============== 配置 ==============
     CONTAINER_PREFIX = "github_traffic"
-    START_IDX = 0
-    END_IDX = 28
+    CONTAINER_COUNT = 29
     HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_github')
     BASE_DST = '/netdisk/github_with_ssl_key/lyl'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"

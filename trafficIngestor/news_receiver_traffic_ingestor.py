@@ -45,8 +45,7 @@ def get_real_username() -> str:
 CODE_BASE_PATH = _project_root  # 使用相对路径
 CSV_PATH = os.path.join(_current_dir, 'urls_combined.csv')  # 使用相对路径
 CONTAINER_PREFIX = f"{get_real_username()}_traffic_receiver"
-START_IDX = 0
-END_IDX = 2                    # 0..78 共 79 个容器（若只需 76 个，把 END_IDX 改为 75）
+CONTAINER_COUNT = 3                    # 容器数量
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 # DOCKER_IMAGE = "chuanzhoupan/trace_spider_firefox:251104"
 CONTAINER_CODE_PATH = "/app"
@@ -198,8 +197,8 @@ def ensure_container_ready(name: str, host_code_path: str, image: str) -> bool:
     return False
 
 
-def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str]:
-    return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
+def build_container_names(prefix: str, count: int) -> List[str]:
+    return [f"{prefix}{i}" for i in range(count)]
 
 
 def read_jobs(csv_path: str) -> Tuple[List[Dict[str, str]], List[str]]:
@@ -393,7 +392,7 @@ def prepare_pool_once() -> List[str]:
     if not host_code.is_absolute():
         log(f"WARN: 建议使用绝对路径挂载，当前={host_code}")
 
-    names = build_container_names(CONTAINER_PREFIX, START_IDX, END_IDX)
+    names = build_container_names(CONTAINER_PREFIX, CONTAINER_COUNT)
     log(f"容器池规模={len(names)}: {names[0]} … {names[-1]}")
 
     created: List[str] = []

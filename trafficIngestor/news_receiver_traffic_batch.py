@@ -35,8 +35,7 @@ if _project_root not in sys.path:
 CODE_BASE_PATH = _project_root  # 使用相对路径
 CSV_PATH = "collected_request_urls_all.csv"
 CONTAINER_PREFIX = "batch_traffic_batch"
-START_IDX = 0
-END_IDX = 19 * 5 - 1                       # 0..2 共 3 个容器
+CONTAINER_COUNT = 19 * 5                       # 容器数量
 DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
 CONTAINER_CODE_PATH = "/app"
 HOST_CODE_PATH = os.path.join(_project_root, 'batch_traffice_capture')  # 使用相对路径
@@ -170,8 +169,8 @@ def disable_offload_once(name: str):
         log(f"WARN: {name}: 关闭包合并失败：{msg if msg else 'unknown error'}")
 
 
-def build_container_names(prefix: str, start_idx: int, end_idx: int) -> List[str]:
-    return [f"{prefix}{i}" for i in range(start_idx, end_idx + 1)]
+def build_container_names(prefix: str, count: int) -> List[str]:
+    return [f"{prefix}{i}" for i in range(count)]
 
 
 def read_jobs_batch(csv_path: str) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -339,7 +338,7 @@ def prepare_pool_once() -> List[str]:
     if not host_code.is_absolute():
         log(f"WARN: 建议使用绝对路径挂载，当前={host_code}")
 
-    names = build_container_names(CONTAINER_PREFIX, START_IDX, END_IDX)
+    names = build_container_names(CONTAINER_PREFIX, CONTAINER_COUNT)
     log(f"容器池规模={len(names)}: {names[0]} … {names[-1]}")
 
     created: List[str] = []

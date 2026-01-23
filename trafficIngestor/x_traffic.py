@@ -24,8 +24,7 @@ class XTrafficIngestor(BaseTrafficIngestor):
 
     # ============== 配置 ==============
     CONTAINER_PREFIX = f"{get_real_username()}_x_traffic"
-    START_IDX = 0
-    END_IDX = 21 * 20 - 1
+    CONTAINER_COUNT = 21 * 20
     HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_x')
     BASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260123'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"

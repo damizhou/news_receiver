@@ -27,8 +27,7 @@ class NewsReceiverTrafficIngestor(BaseTrafficIngestor):
 
     # ============== 配置 ==============
     CONTAINER_PREFIX = f"{get_real_username()}_news_traffic"
-    START_IDX = 0
-    END_IDX = 2
+    CONTAINER_COUNT = 21 * 5
     HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture')
     BASE_DST = '/netdisk/news_receiver'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
