@@ -129,6 +129,8 @@ def create_chrome_driver(task_name=None, formatted_time=None, parsers=None,
 
     chrome_options.add_argument('--headless')  # 无界面模式
     chrome_options.add_argument("--disable-gpu")  # 禁用 GPU 加速
+    chrome_options.add_argument("--disable-features=AsyncDns")  # 禁用Chrome异步DNS，使用系统DNS
+    chrome_options.add_argument("--disable-async-dns")  # 备用参数
     chrome_options.add_argument("--no-sandbox")  # 禁用沙盒
     chrome_options.add_argument("--disable-dev-shm-usage")  # 限制使用/dev/shm
     chrome_options.add_argument("--incognito")  # 隐身模式

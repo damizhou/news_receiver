@@ -23,9 +23,9 @@ class XTrafficIngestor(BaseTrafficIngestor):
     """X(Twitter) 流量采集器"""
 
     # ============== 配置 ==============
-    CONTAINER_PREFIX = f"{get_real_username()}_x_traffic"
-    CONTAINER_COUNT = 21 * 20
-    HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_x')
+    CONTAINER_PREFIX = f"{get_real_username()}_traffic_capture_single_csv"
+    CONTAINER_COUNT = 21 * 15
+    HOST_CODE_PATH = os.path.join(_project_root, 'traffic_capture_single_csv')
     BASE_DST = '/netdisk/x_with_ssl_key/collection_without_login_260123'
     DOCKER_IMAGE = "chuanzhoupan/trace_spider:250912"
     RETRY = 5
