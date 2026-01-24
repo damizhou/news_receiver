@@ -469,9 +469,24 @@ class BaseTrafficIngestor(ABC):
         """任务失败回调，子类可覆盖（如标记数据库）"""
         pass
 
+    def _handle_final_failure(self, task: Dict[str, str], err: str,
+                               stats: Dict[str, Any], task_start_time: float) -> None:
+        """处理最终失败的任务"""
+        row_id = task.get("row_id", "")
+        url = task.get("url", "")
+        container = task.get("container", "unknown")
+        task_elapsed = time.time() - task_start_time
+
+        self.log(f"{container} -> give up [{row_id}] {url} after {self.RETRY + 1} attempts")
+        self.on_task_failed(task, err)
+        with self._stats_lock:
+            stats["fail"] += 1
+            stats["errors"].append((task, err))
+        self._update_progress(ok=False, task_elapsed=task_elapsed)
+
     def worker_loop(self, container: str, q: "queue.Queue[Dict[str, str]]",
                     stats: Dict[str, Any], retry: int) -> None:
-        """Worker 循环，带重试"""
+        """Worker 循环，失败任务放回队列由其他容器重试"""
         while True:
             try:
                 task = q.get_nowait()
@@ -482,50 +497,54 @@ class BaseTrafficIngestor(ABC):
             url = task.get("url", "")
             task["container"] = container
 
-            ok = False
-            err = ""
-            task_start_time = time.time()
+            # 记录重试次数和首次开始时间
+            attempt = task.get("_retry_count", 0)
+            if "_start_time" not in task:
+                task["_start_time"] = time.time()
+            task_start_time = task["_start_time"]
 
-            for attempt in range(retry + 1):
-                try:
-                    if attempt == 0:
-                        self.log(f"{container} -> start [{row_id}] {url}")
-                    else:
-                        self.log(f"{container} -> retry {attempt}/{retry} [{row_id}] {url}")
+            if attempt == 0:
+                self.log(f"{container} -> start [{row_id}] {url}")
+            else:
+                self.log(f"{container} -> retry {attempt}/{retry} [{row_id}] {url}")
 
-                    ok, err = self.exec_once(task)
-                    if ok:
-                        task_elapsed = time.time() - task_start_time
-                        self.log(f"{container} -> done  [{row_id}] {url} ({task_elapsed:.1f}s)")
-                        with self._stats_lock:
-                            stats["ok"] += 1
-                        self._update_progress(ok=True, task_elapsed=task_elapsed)
-                        break
-                    else:
-                        self.log(f"{container} -> fail  [{row_id}] {err[:200]}")
-                        if attempt < retry:
-                            time.sleep(5)
-
-                except subprocess.TimeoutExpired:
-                    err = f"timeout>{self.DOCKER_EXEC_TIMEOUT}s"
-                    self.log(f"{container} -> timeout [{row_id}] {url}")
+            try:
+                ok, err = self.exec_once(task)
+                if ok:
+                    task_elapsed = time.time() - task_start_time
+                    self.log(f"{container} -> done  [{row_id}] {url} ({task_elapsed:.1f}s)")
+                    with self._stats_lock:
+                        stats["ok"] += 1
+                    self._update_progress(ok=True, task_elapsed=task_elapsed)
+                else:
+                    self.log(f"{container} -> fail  [{row_id}] {err[:200]}")
+                    # 失败后放回队列，让其他容器重试
                     if attempt < retry:
-                        time.sleep(5)
+                        task["_retry_count"] = attempt + 1
+                        time.sleep(2)
+                        q.put(task)
+                    else:
+                        self._handle_final_failure(task, err, stats, task_start_time)
 
-                except Exception as e:
-                    err = repr(e)
-                    self.log(f"{container} -> error [{row_id}] {err}")
-                    if attempt < retry:
-                        time.sleep(5)
+            except subprocess.TimeoutExpired:
+                err = f"timeout>{self.DOCKER_EXEC_TIMEOUT}s"
+                self.log(f"{container} -> timeout [{row_id}] {url}")
+                if attempt < retry:
+                    task["_retry_count"] = attempt + 1
+                    time.sleep(2)
+                    q.put(task)
+                else:
+                    self._handle_final_failure(task, err, stats, task_start_time)
 
-            if not ok:
-                task_elapsed = time.time() - task_start_time
-                self.log(f"{container} -> give up [{row_id}] {url} after {retry + 1} attempts")
-                self.on_task_failed(task, err)
-                with self._stats_lock:
-                    stats["fail"] += 1
-                    stats["errors"].append((task, err))
-                self._update_progress(ok=False, task_elapsed=task_elapsed)
+            except Exception as e:
+                err = repr(e)
+                self.log(f"{container} -> error [{row_id}] {err}")
+                if attempt < retry:
+                    task["_retry_count"] = attempt + 1
+                    time.sleep(2)
+                    q.put(task)
+                else:
+                    self._handle_final_failure(task, err, stats, task_start_time)
 
             q.task_done()
 
