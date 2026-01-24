@@ -125,6 +125,7 @@ class BaseTrafficIngestor(ABC):
         cmd = [
             "docker", "run",
             "--init",
+            "--dns", "172.17.0.1",  # 使用宿主机 dnsmasq 作为 DNS 缓存
             "--volume", f"{host_code_path}:{self.CONTAINER_CODE_PATH}",
             "--volume", f"{tools_path}:{self.CONTAINER_CODE_PATH}/tools",
             "-e", f"HOST_UID={uid}",
